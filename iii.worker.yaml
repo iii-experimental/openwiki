@@ -1,0 +1,17 @@
+iii: v1
+name: openwiki
+language: javascript
+deploy: bundle
+manifest: package.json
+description: Source-grounded markdown wiki for code repositories, with a browser UI. Generates and maintains categorized, interlinked markdown from a git repo, persists in iii-state, and serves a browser UI + JSON API under /openwiki.
+
+runtime:
+  kind: javascript
+
+scripts:
+  install: npm install
+  start: node src/index.mjs
+
+dependencies:
+  iii-state: "^0.20.0"
+  llm-router: "^1.0.0"

@@ -1,0 +1,15 @@
+{
+  "name": "openwiki",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Source-grounded markdown wiki for code repositories, as an iii worker.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test",
+    "check": "node --check src/index.mjs"
+  },
+  "dependencies": {
+    "iii-sdk": "^0.20.0"
+  }
+}
