@@ -58,8 +58,12 @@ export async function fetchConfig(iii) {
 export function bindConfigTrigger(iii, onChange) {
   iii.registerFunction(
     CONFIG_FN_ID,
-    async () => { await onChange(); return null; },
-    { description: 'Reload runtime config when the openwiki configuration entry changes.' },
+    async () => { await onChange(); return { reloaded: true }; },
+    {
+      description: 'Reload runtime config when the openwiki configuration entry changes.',
+      request_format: { type: 'object', additionalProperties: true, properties: {} },
+      response_format: { type: 'object', additionalProperties: false, required: ['reloaded'], properties: { reloaded: { type: 'boolean' } } },
+    },
   );
   try {
     iii.registerTrigger({

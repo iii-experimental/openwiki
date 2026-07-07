@@ -1,22 +1,34 @@
 // OpenWiki browser UI. Single-page app served inline by the worker.
-// No CDN / npm deps. Vanilla HTML/CSS/JS.
+// No npm deps; vanilla HTML/CSS/JS. Mermaid loads on demand from a CDN for the
+// diagram view and falls back to rendering the source when blocked.
 
 export const INDEX_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>OpenWiki</title>
+<title>openwiki</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
   :root{
-    --bg:#0e0e11; --panel:#161619; --panel-2:#1c1c22; --border:#26262d;
-    --text:#e7e7ec; --text-dim:#9a9aa5; --accent:#7c9cff; --accent-2:#a685ff;
-    --danger:#ff6b6b;
+    --bg:#f2f0ed; --panel:#e9e6e2; --panel-2:#ebe8e3; --border:#d8d5d0;
+    --rule-2:#e6e3df; --text:#0a0a0a; --text-dim:#6b6865; --ink-ghost:#a3a09c;
+    --accent:#ff5a1f; --accent-2:#ff5a1f; --accent-fg:#f2f0ed;
+    --danger:#c43e1c; --warn:#a87a00;
+  }
+  [data-theme="dark"]{
+    --bg:#111110; --panel:#1a1916; --panel-2:#1f1e1c; --border:#2a2926;
+    --rule-2:#1f1e1c; --text:#f2f0ed; --text-dim:#9c9893; --ink-ghost:#5d5a55;
+    --accent:#3ea8ff; --accent-2:#3ea8ff; --accent-fg:#111110;
+    --danger:#c43e1c; --warn:#a87a00;
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--text);
-    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Inter,sans-serif;
-    font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+    font-family:'Chivo Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-feature-settings:'liga' 0,'calt' 0;
+    font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
   a{color:var(--accent);text-decoration:none}
   a:hover{text-decoration:underline}
   button,input{font:inherit;color:inherit}
@@ -39,6 +51,25 @@ export const INDEX_HTML = String.raw`<!doctype html>
     border-radius:6px;padding:6px 10px;color:var(--text);outline:none;transition:border .15s}
   .search input:focus{border-color:var(--accent)}
   .search input::placeholder{color:var(--text-dim)}
+  .tbtn{background:var(--panel-2);border:1px solid var(--border);border-radius:6px;
+    padding:6px 12px;color:var(--text);margin-left:8px}
+  .tbtn:hover:not(:disabled){border-color:var(--accent)}
+  .tbtn:disabled{opacity:.4;cursor:not-allowed}
+  .cites{margin-top:28px;border-top:1px solid var(--border);padding-top:14px}
+  .cites h3{font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+    color:var(--text-dim);font-weight:600;margin:0 0 8px}
+  .cites a,.cites span.nolink{display:inline-block;margin:2px 10px 2px 0;font-size:12px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .cites span.nolink{color:var(--text-dim)}
+  .modal.wide{max-width:780px;width:92vw}
+  .ask-input{width:100%;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:6px;padding:9px 11px;color:var(--text);outline:none}
+  .ask-input:focus{border-color:var(--accent)}
+  .ask-answer{margin-top:16px;max-height:52vh;overflow:auto}
+  .ask-answer .md{font-size:13px}
+  .mermaid-box{background:var(--panel-2);border:1px solid var(--border);border-radius:6px;
+    padding:14px;overflow:auto;text-align:center;margin-top:6px}
+  .mermaid-box pre{text-align:left;white-space:pre-wrap;margin:0}
 
   .sidebar{grid-area:side;background:var(--panel);border-right:1px solid var(--border);
     overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:20px}
@@ -144,6 +175,25 @@ export const INDEX_HTML = String.raw`<!doctype html>
     color:var(--text);border-radius:6px;padding:6px 12px}
 
   .empty{color:var(--text-dim);font-size:12px;padding:8px 4px}
+
+  /* --- drafting-sheet enforcement (the law) --- */
+  /* radii: only 0 or full. boxes -> 0; dots/spinner keep their round. */
+  input,button,.chip,.modal,.wiki-item,.page-item,.tbtn,.search input,
+  .newwiki input,.newwiki button,.ask-input,.mermaid-box,.banner,
+  .cites a,.cites span.nolink{border-radius:0}
+  /* single rationed accent: no gradients, no glows, no shadows. */
+  .brand-dot{background:var(--accent);box-shadow:none}
+  .newwiki button{background:var(--accent);color:var(--accent-fg);filter:none;font-weight:600}
+  .newwiki button:disabled{background:var(--panel-2);color:var(--text-dim);filter:none}
+  .wiki-item .progressbar>div{background:var(--accent)}
+  /* active = accent border + text, never a fill. */
+  .wiki-item.active,.page-item.active{background:transparent;border-color:var(--accent);color:var(--accent)}
+  .hero h1{background:none;-webkit-text-fill-color:var(--text);color:var(--text)}
+  .modal,.banner{box-shadow:none}
+  .md a,a{color:var(--accent)}
+  /* lowercase chrome; generated content (.md, .page-title) keeps its case. */
+  .brand,.side-section h3,.cat-head,.tbtn,.newwiki button,.footer,.breadcrumb,
+  .wiki-item .meta,.empty,.phase,.cites h3{text-transform:lowercase}
 </style>
 </head>
 <body>
@@ -153,8 +203,11 @@ export const INDEX_HTML = String.raw`<!doctype html>
     <div class="breadcrumb" id="breadcrumb"></div>
     <div class="top-spacer"></div>
     <div class="search">
-      <input id="search" type="search" placeholder="Search this wiki\u2026" disabled />
+      <input id="search" type="search" placeholder="search this wiki" disabled />
     </div>
+    <button class="tbtn" id="ask-btn" disabled>Ask</button>
+    <button class="tbtn" id="diagram-btn" disabled>Diagram</button>
+    <button class="tbtn" id="theme-btn">dark</button>
   </div>
   <aside class="sidebar">
     <div class="side-section">
@@ -530,6 +583,8 @@ export const INDEX_HTML = String.raw`<!doctype html>
     renderWikiList();
     setHash(id, slugHint || null);
     $('search').disabled = false;
+    $('ask-btn').disabled = false;
+    $('diagram-btn').disabled = false;
     try {
       const [wiki, pages] = await Promise.all([
         api('/wikis/' + id),
@@ -703,8 +758,20 @@ export const INDEX_HTML = String.raw`<!doctype html>
     root.appendChild(head);
     const body = el('div', { class:'md' });
     body.innerHTML = renderMarkdown(page.markdown || '', { wikiId: state.currentWikiId });
-    // rewrite same-page anchor links to be safe
     root.appendChild(body);
+    if (page.citations && page.citations.length) root.appendChild(renderCitations(page.citations));
+  }
+
+  function renderCitations(citations) {
+    const box = el('div', { class:'cites' }, el('h3', { text:'Citations' }));
+    for (const c of citations) {
+      if (!c || !c.path) continue;
+      const range = c.start_line ? (':' + c.start_line + (c.end_line && c.end_line !== c.start_line ? '-' + c.end_line : '')) : '';
+      const label = c.path + range;
+      if (c.url) box.appendChild(el('a', { href: c.url, target:'_blank', rel:'noopener noreferrer', text: label }));
+      else box.appendChild(el('span', { class:'nolink', text: label }));
+    }
+    return box;
   }
 
   //--- search
@@ -744,6 +811,73 @@ export const INDEX_HTML = String.raw`<!doctype html>
     document.body.appendChild(back);
   }
 
+  //--- ask modal
+  function openAsk() {
+    if (!state.currentWikiId) return;
+    const back = el('div', { class:'modal-back', onclick: (e) => { if (e.target === back) back.remove(); } });
+    const answer = el('div', { class:'ask-answer' });
+    const input = el('input', { class:'ask-input', placeholder:'Ask a question about this repo…', autocomplete:'off' });
+    const ask = async () => {
+      const q = input.value.trim();
+      if (!q) return;
+      answer.textContent = '';
+      answer.appendChild(el('div', { class:'spinner' }));
+      try {
+        const res = await api('/wikis/' + state.currentWikiId + '/ask', {
+          method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ q }),
+        });
+        answer.textContent = '';
+        const md = el('div', { class:'md' });
+        md.innerHTML = renderMarkdown(res.answer || '', { wikiId: state.currentWikiId });
+        answer.appendChild(md);
+        if (res.citations && res.citations.length) answer.appendChild(renderCitations(res.citations));
+      } catch (e) {
+        answer.textContent = '';
+        answer.appendChild(el('div', { class:'empty', text:'Ask failed: ' + e.message }));
+      }
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ask(); } });
+    const box = el('div', { class:'modal wide' },
+      el('h2', { text:'Ask this wiki' }),
+      input,
+      answer,
+      el('button', { onclick: () => back.remove(), text:'Close' }),
+    );
+    back.appendChild(box);
+    document.body.appendChild(back);
+    setTimeout(() => input.focus(), 0);
+  }
+
+  //--- diagram modal (mermaid rendered on demand from a CDN; falls back to source)
+  async function openDiagram() {
+    if (!state.currentWikiId) return;
+    const back = el('div', { class:'modal-back', onclick: (e) => { if (e.target === back) back.remove(); } });
+    const area = el('div', { class:'mermaid-box' }, el('div', { class:'spinner' }));
+    const box = el('div', { class:'modal wide' },
+      el('h2', { text:'Architecture diagram' }),
+      area,
+      el('button', { onclick: () => back.remove(), text:'Close' }),
+    );
+    back.appendChild(box);
+    document.body.appendChild(back);
+    try {
+      const res = await api('/wikis/' + state.currentWikiId + '/diagram');
+      const code = res.mermaid || '';
+      area.textContent = '';
+      try {
+        const mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+        const mermaid = mod.default;
+        mermaid.initialize({ startOnLoad:false, theme:'dark' });
+        const { svg } = await mermaid.render('owd' + Date.now(), code);
+        area.innerHTML = svg;
+      } catch (_) {
+        const pre = el('pre'); pre.textContent = code; area.appendChild(pre);
+      }
+    } catch (e) {
+      area.textContent = 'Diagram failed: ' + e.message;
+    }
+  }
+
   //--- init
   function bindUI() {
     const input = $('repo-url');
@@ -758,6 +892,19 @@ export const INDEX_HTML = String.raw`<!doctype html>
       generateWiki(v);
     });
     $('search').addEventListener('input', onSearchInput);
+    $('ask-btn').addEventListener('click', openAsk);
+    $('diagram-btn').addEventListener('click', openDiagram);
+    const themeBtn = $('theme-btn');
+    const applyTheme = (t) => {
+      document.documentElement.setAttribute('data-theme', t);
+      themeBtn.textContent = t === 'dark' ? 'light' : 'dark';
+      try { localStorage.setItem('ow-theme', t); } catch (_) {}
+    };
+    themeBtn.addEventListener('click', () =>
+      applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+    let savedTheme = 'light';
+    try { savedTheme = localStorage.getItem('ow-theme') || 'light'; } catch (_) {}
+    applyTheme(savedTheme);
     $('about-link').addEventListener('click', (e) => { e.preventDefault(); openAbout(); });
     window.addEventListener('hashchange', onHashChange);
   }

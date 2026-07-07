@@ -4,3 +4,9 @@ package-lock.json
 *.bak2
 *.bak3
 .DS_Store
+
+# iii `worker add` local artifacts — never commit
+config/
+config.yaml
+iii.lock
+.gstack/

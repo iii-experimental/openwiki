@@ -10,23 +10,46 @@ primitives; the model is a wiki maintainer, not a chatbot.
 
 Not published to the iii registry yet. Run it locally against a running engine.
 
-## Dependencies
+## How it composes
 
-openwiki calls other workers rather than embedding their logic. A running engine
-must have `llm-router` installed and at least one model provider configured:
+openwiki is a thin orchestrator: it calls other iii workers over the bus instead
+of embedding their logic, and degrades gracefully when a worker is absent.
+
+**Page generation is tiered.** For each page it tries, in order:
+
+1. `harness` — an agent explores the clone through openwiki's scoped readers
+   (`openwiki::src::read` / `src::list` / `src::grep`) and returns a page with
+   line-level citations. Best quality.
+2. `llm-router` — one `router::complete` over the pre-selected source files.
+3. heuristic — no LLM; builds a serviceable page from file headers. Always works.
+
+Git runs through `shell` (`shell::exec`) when present, otherwise a local `git`
+fallback. Persistence is iii-state (engine builtin). The UI + JSON API need an
+`http` provider; the nightly refresh needs `iii-cron`.
+
+### Worker matrix
+
+| Want | Add |
+|---|---|
+| Generate + browse via CLI triggers (heuristic) | nothing beyond the engine |
+| LLM-written pages | `llm-router` + a configured provider |
+| Agentic, line-cited pages | `harness` + `session-manager` + `context-manager` (+ a provider) |
+| Browser UI at `/openwiki` | `iii-http` |
+| Jailed git (clone dir must sit inside shell's `fs.host_roots`) | `shell` |
+| Nightly incremental refresh | `iii-cron` |
 
 ```
-iii worker add llm-router
+iii worker add llm-router harness session-manager context-manager iii-http iii-cron shell
 ```
 
-- `llm-router` plus a configured provider (anthropic, openai, or xai). openwiki
-  calls `router::complete` with a model id; the router owns the provider choice
-  and the credential. Set the key in the llm-router config
-  (`providers.<name>.api_key`), not here.
-- `iii-http` (engine builtin) serves the browser UI and JSON API under
-  `/openwiki`.
-- `iii-cron` (engine builtin) runs the nightly refresh.
-- `git` on PATH, used to clone and diff repositories.
+The router owns the credential — configure a provider (anthropic, openai, xai,
+or an OAuth CLI provider) in the llm-router config; openwiki never holds a key.
+The default model is `claude-sonnet-4-6`; override per call (`{"model":"..."}`)
+or with `OPENWIKI_MODEL`. openwiki resolves the model against
+`router::models::list` and prefers a structured-output-capable model for the
+harness path.
+
+`git` must be on PATH for the local fallback.
 
 ## Local setup
 
@@ -36,12 +59,18 @@ cd openwiki
 npm install
 ```
 
-Start the engine in one terminal (from a directory that has a `config.yaml`),
-then run the worker in another:
+Start the engine in one terminal (`config.collect.yaml` lists the workers
+openwiki composes — `shell`, `iii-state`, `iii-http`, `iii-cron`, `llm-router`
+plus a provider), then run the worker in another:
 
 ```
+iii -c config.collect.yaml
 III_URL=ws://127.0.0.1:49134 node src/index.mjs
 ```
+
+Git (clone / diff) runs through the `shell` worker when present, so the clone
+directory (`OPENWIKI_DATA`) must resolve inside shell's `fs.host_roots`. Without
+the shell worker, openwiki falls back to local `git`.
 
 Environment:
 
@@ -68,6 +97,29 @@ iii trigger openwiki::page     --json '{"id":"<wiki_id>","slug":"overview"}'
 iii trigger openwiki::search   --json '{"id":"<wiki_id>","q":"config"}'
 ```
 
+## Verify locally
+
+Unit tests (no engine needed):
+
+```
+npm test
+```
+
+Smoke test against a running engine. The heuristic tier needs no provider, so
+this works on a bare engine:
+
+```
+iii trigger openwiki::generate --json '{"repo_url":"https://github.com/octocat/Hello-World"}'
+iii trigger openwiki::status   --json '{"id":"<wiki_id>"}'   # poll until phase = ready
+iii trigger openwiki::pages    --json '{"id":"<wiki_id>"}'
+iii trigger openwiki::lint     --json '{"id":"<wiki_id>"}'
+iii trigger openwiki::refresh  --json '{"id":"<wiki_id>"}'   # unchanged HEAD -> {"refresh":"up_to_date"}
+```
+
+With `llm-router` + a provider the pages are model-written; with the `harness`
+stack they are agent-explored and line-cited. Without either, the heuristic tier
+still produces a browsable wiki.
+
 ## Functions
 
 - `openwiki::generate { repo_url, model? }` start a wiki build; returns `{ wiki_id, status }`.
@@ -77,18 +129,49 @@ iii trigger openwiki::search   --json '{"id":"<wiki_id>","q":"config"}'
 - `openwiki::pages { id }` page index.
 - `openwiki::page { id, slug }` a page's markdown and metadata.
 - `openwiki::search { id, q }` keyword search over a wiki.
-- `openwiki::refresh { id }` git-pull and regenerate changed pages.
+- `openwiki::refresh { id }` pull and regenerate only the pages whose source changed (incremental).
+- `openwiki::lint { id }` validate every page citation against the clone; flag thin pages.
 
-HTTP triggers mirror these under `/openwiki/api/*`, and `/openwiki` serves the UI.
+Scoped readers the harness calls to explore a clone (jailed to one wiki's clone):
+
+- `openwiki::src::read { id, path, from?, to? }` read a file, optionally a line window.
+- `openwiki::src::list { id, dir? }` list files (path, language, priority).
+- `openwiki::src::grep { id, pattern, max? }` search file contents.
+
+Answer, visualize, export:
+
+- `openwiki::ask { id, q, mode? }` cited Q&A over the wiki (`mode` = `fast` router, `deep` harness; heuristic fallback).
+- `openwiki::diagram { id, kind? }` a Mermaid architecture diagram (LLM, with a deterministic structural fallback).
+- `openwiki::export-agents-md { id, base_url? }` the `AGENTS.md` / `CLAUDE.md` pointer block for a repo.
+
+MCP: openwiki registers `openwiki::read-wiki-structure`, `read-wiki-contents`, and
+`ask-question`, which the `mcp` bridge advertises (as `openwiki__read-wiki-structure`
+etc.) so any MCP client can browse and query a wiki.
+
+HTTP triggers mirror the read/generate functions under `/openwiki/api/*`, and
+`/openwiki` serves the UI — page citations deep-link to source at the pinned
+commit, plus **Ask** and **Diagram** panels.
 
 ## How generation works
 
-1. Clone the repo and inventory its files.
-2. One model call plans a categorized outline of 5 to 15 pages.
+1. Clone the repo (via the `shell` worker) and inventory its files.
+2. One model call plans a categorized outline of 6 to 12 pages.
 3. Page writers run in parallel; each reads the relevant source files and writes
    markdown with `[[wiki-links]]` and `path:line` citations.
-4. Pages and the index are stored under `OPENWIKI_DATA`; the last commit is
-   recorded so `openwiki::refresh` can regenerate only changed pages.
+4. Pages are stored in iii-state behind a lightweight page index (so large wikis
+   never enumerate page bodies), and the last commit + a page-set content hash
+   are recorded.
+
+## How refresh works
+
+`openwiki::refresh` is incremental, not a full rebuild:
+
+1. Pull the clone and read the new `HEAD`. If it matches the recorded commit, stop.
+2. `git diff` the recorded commit against the new one for changed paths.
+3. Map changed paths to affected pages through the file→page index; regenerate
+   only those pages.
+4. Gate on a content hash so an identical result does not churn the wiki — no
+   empty updates on a nightly cron.
 
 ## Configuration
 
