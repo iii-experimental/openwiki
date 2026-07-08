@@ -2,7 +2,7 @@
 // a cited answer. Fast mode uses one router completion; deep mode drives the
 // harness to explore both the wiki and the clone; both fall back to a heuristic
 // answer (stitched page excerpts) so ask works with no provider. A good answer
-// can be filed back as a new page so explorations compound (Karpathy's Query).
+// can be filed back as a new page so explorations compound into the wiki.
 import * as store from './store.mjs';
 import { searchPages } from './search.mjs';
 import { extractAssistantText } from './generate.mjs';

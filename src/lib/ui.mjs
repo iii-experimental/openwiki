@@ -100,6 +100,11 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .mermaid-box{background:var(--panel-2);border:1px solid var(--border);border-radius:6px;
     padding:14px;overflow:auto;text-align:center;margin-top:6px}
   .mermaid-box pre{text-align:left;white-space:pre-wrap;margin:0}
+  .mermaid-render{margin:1.2em 0}
+  .mermaid-render .mmout{background:var(--panel-2);border:1px solid var(--border);
+    padding:16px;overflow-x:auto;text-align:center}
+  .mermaid-render .mmout svg{max-width:100%;height:auto}
+  .mermaid-render .mmout pre{text-align:left;white-space:pre-wrap;margin:0;font-size:12px}
 
   .sidebar{grid-area:side;background:var(--panel);border-right:1px solid var(--border);
     overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:20px}
@@ -302,6 +307,42 @@ export const INDEX_HTML = String.raw`<!doctype html>
     return new Date(ts).toLocaleDateString();
   }
 
+  // Inline mermaid: render fenced mermaid blocks in place (CDN, lazy).
+  let _mermaid = null;
+  let _mmSeq = 0;
+  async function loadMermaid() {
+    if (_mermaid) return _mermaid;
+    const mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+    _mermaid = mod.default;
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    _mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'default', securityLevel: 'strict' });
+    return _mermaid;
+  }
+  function mermaidSourceFallback(box) {
+    const src = box.querySelector('.mmsrc');
+    const out = box.querySelector('.mmout');
+    if (!src || !out) return;
+    out.textContent = '';
+    const pre = document.createElement('pre');
+    pre.textContent = src.textContent;
+    out.appendChild(pre);
+  }
+  async function renderMermaidBlocks(root) {
+    const blocks = root.querySelectorAll('.mermaid-render');
+    if (!blocks.length) return;
+    let mermaid;
+    try { mermaid = await loadMermaid(); } catch { blocks.forEach(mermaidSourceFallback); return; }
+    for (const box of blocks) {
+      const src = box.querySelector('.mmsrc');
+      const out = box.querySelector('.mmout');
+      if (!src || !out) continue;
+      try {
+        const { svg } = await mermaid.render('mm' + (++_mmSeq) + '-' + Date.now(), src.textContent);
+        out.innerHTML = svg;
+      } catch { mermaidSourceFallback(box); }
+    }
+  }
+
   //--- helpers
   const $ = (id) => document.getElementById(id);
   const el = (tag, attrs, ...kids) => {
@@ -419,8 +460,12 @@ export const INDEX_HTML = String.raw`<!doctype html>
         i++;
         while (i < lines.length && !/^\`\`\`\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
         i++; // consume closing fence
-        const cls = lang ? ' class="lang-' + escapeHtml(lang) + '"' : '';
-        out += '<pre><code' + cls + '>' + escapeHtml(buf.join('\n')) + '</code></pre>';
+        if (lang === 'mermaid') {
+          out += '<div class="mermaid-render"><pre class="mmsrc" hidden>' + escapeHtml(buf.join('\n')) + '</pre><div class="mmout"><div class="spinner"></div></div></div>';
+        } else {
+          const cls = lang ? ' class="lang-' + escapeHtml(lang) + '"' : '';
+          out += '<pre><code' + cls + '>' + escapeHtml(buf.join('\n')) + '</code></pre>';
+        }
         continue;
       }
 
@@ -606,10 +651,12 @@ export const INDEX_HTML = String.raw`<!doctype html>
         repo_name: state.generating.get(wid) && state.generating.get(wid).repo_name,
       });
       renderWikiList();
+      if (wid === state.currentWikiId && st.phase !== 'ready') renderMainProgress(state.generating.get(wid));
       if (st.phase === 'ready' || st.phase === 'error') {
         clearInterval(state.pollTimers.get(wid));
         state.pollTimers.delete(wid);
         if (st.phase === 'error') {
+          if (wid === state.currentWikiId) renderMainProgress(state.generating.get(wid));
           flashError('Generation failed: ' + (st.error || st.message || 'unknown'));
         } else {
           state.generating.delete(wid);
@@ -652,6 +699,12 @@ export const INDEX_HTML = String.raw`<!doctype html>
     }
     renderBreadcrumb();
     renderPageList();
+    // still building: show live progress and poll until ready.
+    if (state.currentWiki && state.currentWiki.generating) {
+      pollStatus(id);
+      renderMainProgress(state.generating.get(id) || { phase: 'generating', progress: 0 });
+      return;
+    }
     // pick a page
     let target = slugHint;
     if (!target || !state.pages.find((p) => p.slug === target)) {
@@ -812,6 +865,22 @@ export const INDEX_HTML = String.raw`<!doctype html>
     }
   }
 
+  function renderMainProgress(gen) {
+    const g = gen || { phase: 'queued', progress: 0 };
+    const pct = Math.round((g.progress || 0) * 100);
+    const err = g.phase === 'error';
+    const bar = err ? '' : '<div style="height:4px;width:280px;background:var(--panel-2);border:1px solid var(--border);margin-top:12px"><div style="height:100%;background:var(--accent);transition:width .3s;width:' + pct + '%"></div></div>';
+    $('main').innerHTML =
+      '<div class="hero">' +
+      (err ? '' : '<div class="spinner"></div>') +
+      '<h1>' + (err ? 'generation failed' : 'generating…') + '</h1>' +
+      '<div class="phase' + (err ? ' error' : '') + '">' + escapeHtml((g.phase || 'working') + (err ? '' : ' — ' + pct + '%')) + '</div>' +
+      bar +
+      (g.message ? '<p>' + escapeHtml(g.message) + '</p>' : '') +
+      '</div>';
+    renderRail(null);
+  }
+
   function renderMain(page) {
     const root = $('main');
     root.textContent = '';
@@ -844,6 +913,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     const body = el('div', { class:'md' });
     body.innerHTML = renderMarkdown(page.markdown || '', { wikiId: state.currentWikiId });
     root.appendChild(body);
+    renderMermaidBlocks(body);
     if (page.citations && page.citations.length) root.appendChild(renderCitations(page.citations));
     renderRail(page);
   }
@@ -929,10 +999,8 @@ export const INDEX_HTML = String.raw`<!doctype html>
     const back = el('div', { class:'modal-back', onclick: (e) => { if (e.target === back) back.remove(); } });
     const box = el('div', { class:'modal' },
       el('h2', { text:'About OpenWiki' }),
-      el('p', { text:'OpenWiki turns any code repository into a browsable, LLM-generated knowledge base \u2014 categories, pages, and searchable content, produced from the source itself.' }),
-      el('p', {}, 'Inspired by ',
-        el('a', { href:'https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f', target:'_blank', rel:'noopener noreferrer', text:'Karpathy\u2019s gist on repo-to-wiki generation' }),
-        '.'),
+      el('p', { text:'OpenWiki turns any code repository into a browsable, source-grounded wiki: a hierarchical set of cited pages generated from the source itself, kept current from git changes.' }),
+      el('p', { text:'Built as an iii worker \u2014 it composes the harness, llm-router, shell, and web workers to plan, explore, and write.' }),
       el('button', { onclick: () => back.remove(), text:'Close' }),
     );
     back.appendChild(box);
@@ -958,6 +1026,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
         const md = el('div', { class:'md' });
         md.innerHTML = renderMarkdown(res.answer || '', { wikiId: state.currentWikiId });
         answer.appendChild(md);
+        renderMermaidBlocks(md);
         if (res.citations && res.citations.length) answer.appendChild(renderCitations(res.citations));
       } catch (e) {
         answer.textContent = '';

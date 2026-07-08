@@ -49,6 +49,9 @@ const PAGE_SYSTEM =
   '- ALWAYS include a "## Relevant Source Files" section: bullets naming each key file and one line on why it matters.\n' +
   '- Explain WHY the code is shaped this way, not only what it does.\n' +
   '- Ground concrete claims with visible "Sources: path/a.ts, path/b.ts" lines in the prose (copy paths exactly).\n' +
+  '- Where a picture aids understanding (architecture, data flow, execution flow, a state machine, a class or module\n' +
+  '  relationship), embed a Mermaid diagram INLINE as a ```mermaid fenced code block, placed in the relevant section.\n' +
+  '  Keep each diagram small and valid (flowchart/sequenceDiagram/classDiagram). Do not add a diagram just to have one.\n' +
   '- Aim for 400-900 words of real explanation (code blocks and bare paths do not count).\n' +
   '- Link sibling pages inline as [Title](./slug.md).\n\n' +
   'Return JSON matching the schema: { title, markdown, citations, links, confidence, status }.\n' +
