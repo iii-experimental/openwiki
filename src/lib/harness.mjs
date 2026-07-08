@@ -201,6 +201,40 @@ export async function generatePageViaHarness(client, opts) {
   return best;
 }
 
+// Spawn one page-writer as a native harness sub-agent (fire-and-forget). The
+// page arrives later on harness::turn-completed (routed via turnbus), never here.
+// harness::spawn (not send) is REQUIRED: only spawn stamps
+// display_parent_session_id, which the turn-completed event carries so openwiki
+// can collect every page via a single {parent_session_id: root} subscription
+// (a plain send emits parent_session_id: null — harness send.rs). The child
+// reads source itself via openwiki::src::*; openwiki pre-reads nothing.
+export async function spawnPageChild(client, opts) {
+  const {
+    wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles,
+    model, provider, rootSessionId, feedback = '', previousMarkdown = '', maxTurns = 12,
+  } = opts;
+  const childSessionId = rootSessionId + '/' + outlineItem.slug;
+  const message = buildUserPrompt({ wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles, feedback, previousMarkdown });
+  const r = await client.trigger({
+    function_id: 'harness::spawn',
+    payload: {
+      task: message,
+      ...(model ? { model } : {}),
+      ...(provider ? { provider } : {}),
+      session_id: childSessionId,
+      parent_session_id: rootSessionId,
+      options: {
+        system_prompt: PAGE_SYSTEM,
+        output: { type: 'json', schema: PAGE_HARNESS_OUT },
+        functions: { allow: ['openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
+        max_turns: maxTurns,
+      },
+    },
+    timeoutMs: 30_000,
+  });
+  return r?.child_session_id || childSessionId;
+}
+
 const PLAN_SYSTEM =
   'You are OpenWiki planning a documentation wiki for a code repository.\n' +
   'Explore the repository first (always pass the given id):\n' +

@@ -12,8 +12,9 @@ import { inventoryRepo, readSourceFile } from './lib/inventory.mjs';
 import * as store from './lib/store.mjs';
 import { searchPages } from './lib/search.mjs';
 import { planWiki } from './lib/generate.mjs';
-import { generatePageAny, planViaHarness } from './lib/harness.mjs';
+import { generatePageAny, planViaHarness, spawnPageChild, mapResult } from './lib/harness.mjs';
 import { resolveModel } from './lib/model.mjs';
+import * as turnbus from './lib/turnbus.mjs';
 import { srcRead, srcList, srcGrep, invalidateInventory, getReadStats, resetReadStats } from './lib/src.mjs';
 import { lintWiki } from './lib/lint.mjs';
 import { askWiki } from './lib/ask.mjs';
@@ -22,6 +23,7 @@ import { exportAgentsMd } from './lib/agents_md.mjs';
 import { normalizePlan } from './lib/nav.mjs';
 import { fetchDocsIndex, docsHint as buildDocsHint } from './lib/docs_oracle.mjs';
 import { pushProgress, onProgress } from './lib/progress.mjs';
+import { getPageQualityIssues } from './lib/quality.mjs';
 import { INDEX_HTML } from './lib/ui.mjs';
 import * as configuration from './lib/configuration.mjs';
 import * as S from './lib/schemas.mjs';
@@ -40,6 +42,9 @@ store.ensureRoot().catch((e) => console.error('[openwiki] ensureRoot', e));
 
 const now = () => new Date().toISOString();
 const inflight = new Set();
+// True once we've subscribed to harness::turn-completed; gates the real-time
+// page-collection path (else writePages falls back to synchronous tiers).
+let turnbusReady = false;
 
 // Persist status AND push it to any live SSE subscriber for this wiki.
 async function setStatus(wikiId, status) {
@@ -74,10 +79,76 @@ function inferRepoName(url) {
 // incremental refresh; `fullOutline` supplies sibling links for cross-refs so a
 // partial refresh still links to the whole wiki.
 async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, repoName, repoUrl, model, commit, parentSessionId, progressBase = 0.3, progressSpan = 0.65 }) {
+  const resolved = await resolveModel(client, model);
+  // Native path: spawn one page-writer sub-agent per page and collect results in
+  // real time off harness::turn-completed (no per-page status polling). Requires
+  // a resolved harness model and the plan session as the spawn parent.
+  if (resolved.resolved && parentSessionId && turnbusReady) {
+    return writePagesNative(wikiId, { itemsToWrite, fullOutline, categories, repoName, repoUrl, commit, resolved, rootSessionId: parentSessionId, progressBase, progressSpan });
+  }
+  // Fallback: router / heuristic tiers have no harness turn (no event), so run
+  // them synchronously in bounded parallel.
+  return writePagesSync(wikiId, { dir, itemsToWrite, fullOutline, categories, repoName, repoUrl, model, commit, parentSessionId, resolved, progressBase, progressSpan });
+}
+
+async function writePagesNative(wikiId, { itemsToWrite, fullOutline, categories, repoName, repoUrl, commit, resolved, rootSessionId, progressBase, progressSpan }) {
   const allSlugs = fullOutline.map((o) => o.slug);
   const allTitles = fullOutline.map((o) => o.title);
   const total = itemsToWrite.length || 1;
-  const resolved = await resolveModel(client, model);
+  const bySlug = new Map(itemsToWrite.map((it) => [rootSessionId + '/' + it.slug, it]));
+  const pending = new Set(bySlug.keys());
+  let done = 0;
+
+  const placeholder = (item, why) => store.savePage(
+    wikiId, item.slug, `# ${item.title}\n\n> Generation failed: ${why}\n`,
+    { title: item.title, slug: item.slug, category: item.category, source_paths: item.source_paths || [], last_updated: now(), confidence: 'low', status: 'needs-review' },
+  );
+  const bump = async (item) => {
+    done += 1;
+    pushProgress(wikiId, { kind: 'page', slug: item.slug, title: item.title });
+    await setStatus(wikiId, { phase: 'generating', progress: progressBase + progressSpan * (done / total), message: `Generated ${done}/${total} pages`, pages_done: done, pages_total: total, updated_at: now() });
+  };
+
+  await new Promise((resolve) => {
+    let settled = false;
+    const settle = () => { if (settled) return; settled = true; unreg(); clearTimeout(timer); resolve(); };
+    const consume = async (childId, saver) => {
+      if (!pending.has(childId)) return;
+      pending.delete(childId);
+      const item = bySlug.get(childId);
+      try { await saver(item); } catch (e) { await store.appendLog(wikiId, `store fail ${item.slug}: ${e?.message || e}`); await placeholder(item, e?.message || e).catch(() => {}); }
+      await bump(item);
+      if (!pending.size) settle();
+    };
+    const unreg = turnbus.register(rootSessionId, {
+      onPage: (childId, result) => consume(childId, async (item) => {
+        const { markdown, frontmatter } = mapResult(result, { outlineItem: item, repoUrl, commit });
+        const issues = getPageQualityIssues(markdown, { minWords: 300 });
+        frontmatter.quality_issues = issues.length;
+        if (issues.length) frontmatter.status = 'needs-review';
+        await store.savePage(wikiId, item.slug, markdown, frontmatter);
+        await store.appendLog(wikiId, `Wrote ${item.slug} — ${item.title}`);
+      }),
+      onPageError: (childId, err) => consume(childId, async (item) => {
+        await store.appendLog(wikiId, `FAILED ${item.slug}: ${err}`);
+        await placeholder(item, err);
+      }),
+    });
+    for (const item of itemsToWrite) {
+      spawnPageChild(client, { wikiId, outlineItem: item, repoName, repoUrl, categories, allSlugs, allTitles, model: resolved.model, provider: resolved.provider, rootSessionId })
+        .catch((e) => turnbus.deliver({ session_id: rootSessionId + '/' + item.slug, parent_session_id: rootSessionId, status: 'failed', result_error: String(e?.message || e) }));
+    }
+    const timer = setTimeout(async () => {
+      for (const childId of [...pending]) { pending.delete(childId); const item = bySlug.get(childId); await placeholder(item, 'timed out').catch(() => {}); await bump(item); }
+      settle();
+    }, Math.max(8 * 60_000, total * 30_000));
+  });
+}
+
+async function writePagesSync(wikiId, { dir, itemsToWrite, fullOutline, categories, repoName, repoUrl, model, commit, parentSessionId, resolved, progressBase = 0.3, progressSpan = 0.65 }) {
+  const allSlugs = fullOutline.map((o) => o.slug);
+  const allTitles = fullOutline.map((o) => o.title);
+  const total = itemsToWrite.length || 1;
   const step = Math.max(1, Number(cfg.max_parallel) || 1);
   let done = 0;
 
@@ -86,11 +157,8 @@ async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, 
     await Promise.all(batch.map(async (item) => {
       const reads = [];
       for (const p of item.source_paths || []) {
-        try {
-          reads.push(await readSourceFile(dir, p, 40_000));
-        } catch (e) {
-          reads.push({ path: p, content: `(unreadable: ${e.message})`, truncated: false });
-        }
+        try { reads.push(await readSourceFile(dir, p, 40_000)); }
+        catch (e) { reads.push({ path: p, content: `(unreadable: ${e.message})`, truncated: false }); }
       }
       try {
         const { markdown, frontmatter } = await generatePageAny(client, {
@@ -614,6 +682,22 @@ try {
 } catch (e) {
   console.warn('[openwiki] failed to bind cron', e?.message || e);
 }
+
+// Real-time page collection: subscribe to the harness's emitted turn-completed
+// events and route each to the active generation (turnbus). One broad binding
+// (no session filter) sees every turn; unowned roots are a cheap map miss. This
+// replaces per-page harness::status polling. If the subscription cannot be
+// registered (harness absent/old), turnbusReady stays false and writePages
+// falls back to the synchronous tiers.
+client.registerFunction('openwiki::on-turn-completed', async (evt) => {
+  try { turnbus.deliver(evt?.payload || evt); } catch (e) { console.warn('[openwiki] turn-event route failed', e?.message || e); }
+  return null;
+}, { description: 'Internal: routes harness::turn-completed events to the active generation.', request_format: { type: 'object', additionalProperties: true, properties: {} }, response_format: { type: 'null' } });
+
+Promise.resolve()
+  .then(() => client.registerTrigger({ type: 'harness::turn-completed', function_id: 'openwiki::on-turn-completed', config: {} }))
+  .then(() => { turnbusReady = true; console.log('[openwiki] subscribed to harness::turn-completed (real-time page collection)'); })
+  .catch((e) => console.warn('[openwiki] turn-completed subscribe failed; using synchronous fallback:', e?.message || e));
 
 // Configuration: register the schema, load the stored value, and hot-reload on
 // change. Runs off the boot path so it never delays function registration.
