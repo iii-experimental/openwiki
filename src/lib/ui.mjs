@@ -34,8 +34,38 @@ export const INDEX_HTML = String.raw`<!doctype html>
   button,input{font:inherit;color:inherit}
   button{cursor:pointer}
 
-  #app{display:grid;grid-template-rows:48px 1fr;grid-template-columns:280px 1fr;
-    grid-template-areas:"top top" "side main";height:100vh}
+  #app{display:grid;grid-template-rows:48px 1fr;grid-template-columns:280px minmax(0,1fr) 244px;
+    grid-template-areas:"top top top" "side main rail";height:100vh}
+  @media (max-width:1100px){#app{grid-template-columns:280px minmax(0,1fr);
+    grid-template-areas:"top top" "side main"} .rail{display:none}}
+
+  /* right rail: on-this-page + relevant sources + copy + freshness */
+  .rail{grid-area:rail;border-left:1px solid var(--border);background:var(--panel);
+    overflow-y:auto;padding:20px 16px;display:flex;flex-direction:column;gap:18px}
+  .rail-sec h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;
+    color:var(--text-dim);font-weight:600}
+  .rail a{display:block;color:var(--text-dim);font-size:12px;padding:2px 0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rail a:hover{color:var(--accent)}
+  .rail a.h3{padding-left:12px}
+  .rail .src{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+  .rail .fresh{font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px}
+  .copymd{background:var(--panel-2);border:1px solid var(--border);color:var(--text);
+    padding:6px 10px;font-size:12px;text-transform:lowercase;width:100%;text-align:left}
+  .copymd:hover{border-color:var(--accent)}
+
+  /* nested nav tree */
+  .nav-folder{margin-top:4px}
+  .nav-folder>.fhead{display:flex;align-items:center;gap:6px;padding:5px 4px;cursor:pointer;
+    color:var(--text);font-size:12.5px;font-weight:600;user-select:none}
+  .nav-folder>.fhead .caret{font-size:9px;opacity:.55;transition:transform .15s}
+  .nav-folder.collapsed>.fhead .caret{transform:rotate(-90deg)}
+  .nav-folder.collapsed>.fchildren{display:none}
+  .fchildren{margin-left:10px;border-left:1px solid var(--border);padding-left:8px}
+  .nav-leaf{padding:4px 8px;border-radius:0;cursor:pointer;color:var(--text-dim);font-size:12.5px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:1px solid transparent;outline:none}
+  .nav-leaf:hover{color:var(--text)}
+  .nav-leaf.active{color:var(--accent);border-color:var(--accent)}
   .topbar{grid-area:top;display:flex;align-items:center;gap:16px;padding:0 16px;
     background:var(--panel);border-bottom:1px solid var(--border)}
   .brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.2px}
@@ -230,6 +260,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     </div>
   </aside>
   <main class="main" id="main"></main>
+  <aside class="rail" id="rail"></aside>
 </div>
 
 <script>
@@ -248,7 +279,28 @@ export const INDEX_HTML = String.raw`<!doctype html>
     generating: new Map(),  // wiki_id -> {phase, progress, message}
     pollTimers: new Map(),
     collapsedCats: new Set(),
+    collapsedNav: new Set(),
   };
+
+  const tocSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  function extractToc(md) {
+    const out = [];
+    for (const line of String(md || '').split('\n')) {
+      const m = line.match(/^(#{2,3})\s+(.+)$/);
+      if (!m) continue;
+      const text = m[2].replace(/[\`*]/g, '').trim();
+      out.push({ level: m[1].length, text, id: tocSlug(text) });
+    }
+    return out.slice(0, 24);
+  }
+  function timeAgo(ts) {
+    const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
+    if (s < 60) return Math.floor(s) + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    if (s < 604800) return Math.floor(s / 86400) + 'd ago';
+    return new Date(ts).toLocaleDateString();
+  }
 
   //--- helpers
   const $ = (id) => document.getElementById(id);
@@ -386,7 +438,8 @@ export const INDEX_HTML = String.raw`<!doctype html>
         flushPara();
         out += closeLists(listStack);
         const lvl = h[1].length;
-        out += '<h' + lvl + '>' + inline(h[2].trim()) + '</h' + lvl + '>';
+        const hid = tocSlug(h[2].replace(/[\`*]/g, '').trim());
+        out += '<h' + lvl + ' id="' + escapeHtml(hid) + '">' + inline(h[2].trim()) + '</h' + lvl + '>';
         i++;
         continue;
       }
@@ -661,6 +714,12 @@ export const INDEX_HTML = String.raw`<!doctype html>
       return;
     }
 
+    const nav = (state.currentWiki && state.currentWiki.navigation) || null;
+    if (nav && nav.length) {
+      for (const node of nav) root.appendChild(renderNavNode(node, 0));
+      return;
+    }
+
     const cats = (state.currentWiki && state.currentWiki.categories) || [];
     const seen = new Set();
     for (const c of cats) {
@@ -672,6 +731,30 @@ export const INDEX_HTML = String.raw`<!doctype html>
       if (seen.has(cid)) continue;
       root.appendChild(renderCategory(cid, cid, arr));
     }
+  }
+
+  function renderNavNode(node, depth) {
+    const hasChildren = node.children && node.children.length;
+    if (node.slug && !hasChildren) {
+      return el('div', {
+        class: 'nav-leaf' + (node.slug === state.currentSlug ? ' active' : ''),
+        tabindex: '0',
+        onclick: () => selectPage(node.slug),
+        onkeydown: (e) => pageKey(e, node.slug),
+      }, node.title || node.slug);
+    }
+    const key = 'nav:' + depth + ':' + (node.title || '');
+    const collapsed = state.collapsedNav.has(key);
+    const folder = el('div', { class: 'nav-folder' + (collapsed ? ' collapsed' : '') });
+    folder.appendChild(el('div', {
+      class: 'fhead',
+      onclick: () => { if (state.collapsedNav.has(key)) state.collapsedNav.delete(key); else state.collapsedNav.add(key); renderPageList(); },
+    }, el('span', { class: 'caret', text: '▼' }), el('span', { text: node.title || '' })));
+    const kids = el('div', { class: 'fchildren' });
+    if (node.slug) kids.appendChild(renderNavNode({ title: 'Overview', slug: node.slug }, depth + 1));
+    for (const c of node.children || []) kids.appendChild(renderNavNode(c, depth + 1));
+    folder.appendChild(kids);
+    return folder;
   }
 
   function renderCategory(cid, title, pages) {
@@ -706,7 +789,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectPage(slug); return; }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
-    const items = Array.from(document.querySelectorAll('#pagelist .page-item'));
+    const items = Array.from(document.querySelectorAll('#pagelist .nav-leaf, #pagelist .page-item'));
     const idx = items.findIndex((n) => n === e.target);
     if (idx < 0) return;
     const next = items[idx + (e.key === 'ArrowDown' ? 1 : -1)];
@@ -734,9 +817,11 @@ export const INDEX_HTML = String.raw`<!doctype html>
     root.textContent = '';
     if (page === 'loading') {
       root.appendChild(el('div', { class:'hero' }, el('div', { class:'spinner' })));
+      renderRail(null);
       return;
     }
     if (!page) {
+      renderRail(null);
       if (!state.wikis.length && !state.generating.size) {
         root.appendChild(el('div', { class:'hero' },
           el('h1', { text:'OpenWiki' }),
@@ -753,13 +838,56 @@ export const INDEX_HTML = String.raw`<!doctype html>
     head.appendChild(el('h1', { class:'page-title', text: page.title || page.slug }));
     const chips = el('div', { class:'chips' });
     if (page.category) chips.appendChild(el('span', { class:'chip cat', text: page.category }));
-    for (const sp of (page.source_paths || [])) chips.appendChild(el('span', { class:'chip', text: sp }));
+    if (page.status && page.status !== 'current') chips.appendChild(el('span', { class:'chip', text: page.status }));
     head.appendChild(chips);
     root.appendChild(head);
     const body = el('div', { class:'md' });
     body.innerHTML = renderMarkdown(page.markdown || '', { wikiId: state.currentWikiId });
     root.appendChild(body);
     if (page.citations && page.citations.length) root.appendChild(renderCitations(page.citations));
+    renderRail(page);
+  }
+
+  function renderRail(page) {
+    const rail = $('rail');
+    if (!rail) return;
+    rail.textContent = '';
+    if (!page || page === 'loading') return;
+    const wiki = state.currentWiki;
+    if (wiki) {
+      const sec = el('div', { class:'rail-sec' });
+      if (wiki.repo_url) sec.appendChild(el('a', { class:'src', href: wiki.repo_url, target:'_blank', rel:'noopener noreferrer', text: wiki.repo_name || wiki.repo_url }));
+      if (wiki.updated_at) sec.appendChild(el('div', { class:'fresh', text: 'updated ' + timeAgo(wiki.updated_at) }));
+      rail.appendChild(sec);
+    }
+    const toc = extractToc(page.markdown || '');
+    if (toc.length) {
+      const sec = el('div', { class:'rail-sec' }, el('h4', { text:'On this page' }));
+      for (const t of toc) {
+        sec.appendChild(el('a', {
+          href: '#' + t.id, class: t.level === 3 ? 'h3' : '', text: t.text,
+          onclick: (e) => { e.preventDefault(); const n = document.getElementById(t.id); if (n) n.scrollIntoView({ behavior:'smooth', block:'start' }); },
+        }));
+      }
+      rail.appendChild(sec);
+    }
+    const srcs = page.source_paths || [];
+    if (srcs.length) {
+      const sec = el('div', { class:'rail-sec' }, el('h4', { text:'Relevant source files' }));
+      for (const sp of srcs.slice(0, 14)) {
+        const cite = (page.citations || []).find((c) => c.path === sp && c.url && /^https?:\/\//i.test(c.url));
+        if (cite) sec.appendChild(el('a', { class:'src', href: cite.url, target:'_blank', rel:'noopener noreferrer', text: sp }));
+        else sec.appendChild(el('div', { class:'src', style:'color:var(--text-dim);padding:2px 0', text: sp }));
+      }
+      rail.appendChild(sec);
+    }
+    const btn = el('button', { class:'copymd', text:'copy markdown' });
+    btn.addEventListener('click', () => {
+      const md = page.markdown || '';
+      const done = () => { btn.textContent = 'copied'; setTimeout(() => { btn.textContent = 'copy markdown'; }, 1500); };
+      if (navigator.clipboard) navigator.clipboard.writeText(md).then(done).catch(() => {});
+    });
+    rail.appendChild(btn);
   }
 
   function renderCitations(citations) {
