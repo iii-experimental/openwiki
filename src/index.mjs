@@ -21,6 +21,7 @@ import { makeDiagram } from './lib/diagram.mjs';
 import { exportAgentsMd } from './lib/agents_md.mjs';
 import { normalizePlan } from './lib/nav.mjs';
 import { fetchDocsIndex, docsHint as buildDocsHint } from './lib/docs_oracle.mjs';
+import { pushProgress, onProgress } from './lib/progress.mjs';
 import { INDEX_HTML } from './lib/ui.mjs';
 import * as configuration from './lib/configuration.mjs';
 import * as S from './lib/schemas.mjs';
@@ -39,6 +40,12 @@ store.ensureRoot().catch((e) => console.error('[openwiki] ensureRoot', e));
 
 const now = () => new Date().toISOString();
 const inflight = new Set();
+
+// Persist status AND push it to any live SSE subscriber for this wiki.
+async function setStatus(wikiId, status) {
+  await store.updateStatus(wikiId, status);
+  pushProgress(wikiId, { kind: 'status', phase: status.phase, progress: status.progress, message: status.message, error: status.error });
+}
 
 function err(code, message) {
   const e = new Error(message || code);
@@ -94,6 +101,7 @@ async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, 
         });
         await store.savePage(wikiId, item.slug, markdown, frontmatter);
         await store.appendLog(wikiId, `Wrote ${item.slug} — ${item.title}`);
+        pushProgress(wikiId, { kind: 'page', slug: item.slug, title: item.title });
       } catch (e) {
         await store.appendLog(wikiId, `FAILED ${item.slug}: ${e?.message || e}`);
         await store.savePage(
@@ -103,9 +111,9 @@ async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, 
         );
       }
       done += 1;
-      await store.updateStatus(wikiId, {
+      await setStatus(wikiId, {
         phase: 'generating', progress: progressBase + progressSpan * (done / total),
-        message: `Generated ${done}/${total} pages`, updated_at: now(),
+        message: `Generated ${done}/${total} pages`, pages_done: done, pages_total: total, updated_at: now(),
       });
     }));
   }
@@ -119,18 +127,18 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
   const started = now();
   try {
     await store.appendLog(wikiId, `Starting generation for ${repoUrl} (model=${model})`);
-    await store.updateStatus(wikiId, { phase: 'cloning', progress: 0.05, message: 'Cloning repository', updated_at: now() });
+    await setStatus(wikiId, { phase: 'cloning', progress: 0.05, message: 'Cloning repository', updated_at: now() });
 
     const dir = store.repoDir(wikiId);
     await fs.rm(dir, { recursive: true, force: true });
     const { commit, name } = await cloneRepo(client, repoUrl, dir, ref);
     invalidateInventory(wikiId);
 
-    await store.updateStatus(wikiId, { phase: 'inventorying', progress: 0.15, message: 'Reading source files', updated_at: now() });
+    await setStatus(wikiId, { phase: 'inventorying', progress: 0.15, message: 'Reading source files', updated_at: now() });
     const inventory = await inventoryRepo(dir);
     await store.appendLog(wikiId, `Inventoried ${inventory.length} files.`);
 
-    await store.updateStatus(wikiId, { phase: 'planning', progress: 0.25, message: 'Exploring repo and planning structure', updated_at: now() });
+    await setStatus(wikiId, { phase: 'planning', progress: 0.25, message: 'Exploring repo and planning structure', updated_at: now() });
     let dHint = '';
     try {
       const readme = await readRepoReadme(dir);
@@ -170,7 +178,7 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
 
     const content_hash = await store.computeContentHash(wikiId);
     await store.saveWiki(wikiId, { ...meta0, updated_at: now(), content_hash, generating: false });
-    await store.updateStatus(wikiId, { phase: 'ready', progress: 1, message: 'Wiki ready', updated_at: now() });
+    await setStatus(wikiId, { phase: 'ready', progress: 1, message: 'Wiki ready', updated_at: now() });
     await store.appendLog(wikiId, 'Wiki ready.');
     try {
       const { issues } = await lintWiki(wikiId);
@@ -179,7 +187,7 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
   } catch (e) {
     console.error('[openwiki] generation error', e);
     await store.appendLog(wikiId, `ERROR: ${e?.stack || e?.message || e}`);
-    await store.updateStatus(wikiId, { phase: 'error', progress: 0, error: String(e?.message || e), updated_at: now() });
+    await setStatus(wikiId, { phase: 'error', progress: 0, error: String(e?.message || e), updated_at: now() });
   } finally {
     inflight.delete(wikiId);
   }
@@ -194,7 +202,7 @@ async function startWiki(repoUrl, model, ref, steer) {
     created_at: now(), updated_at: now(), page_count: 0, category_count: 0,
     categories: [], summary: '', model: chosen, steer: steer || undefined, generating: true,
   });
-  await store.updateStatus(wikiId, { phase: 'queued', progress: 0, message: 'Queued', updated_at: now() });
+  await setStatus(wikiId, { phase: 'queued', progress: 0, message: 'Queued', updated_at: now() });
   setImmediate(() => { runGeneration(wikiId, { repoUrl, model: chosen, ref, steer }).catch((e) => console.error(e)); });
   return { wiki_id: wikiId, status: 'queued' };
 }
@@ -207,7 +215,7 @@ async function startWiki(repoUrl, model, ref, steer) {
 async function runRefresh(wikiId, { dir, itemsToWrite, outline, meta, newCommit, prevHash }) {
   inflight.add(wikiId);
   try {
-    await store.updateStatus(wikiId, { phase: 'generating', progress: 0.3, message: `Refreshing ${itemsToWrite.length} pages`, updated_at: now() });
+    await setStatus(wikiId, { phase: 'generating', progress: 0.3, message: `Refreshing ${itemsToWrite.length} pages`, updated_at: now() });
     await writePages(wikiId, {
       dir, itemsToWrite, fullOutline: outline.items || [],
       categories: outline.categories || meta.categories || [],
@@ -216,11 +224,11 @@ async function runRefresh(wikiId, { dir, itemsToWrite, outline, meta, newCommit,
     const content_hash = await store.computeContentHash(wikiId);
     const churned = content_hash !== prevHash;
     await store.saveWiki(wikiId, { ...meta, commit: newCommit, content_hash, page_count: (outline.items || []).length, updated_at: now() });
-    await store.updateStatus(wikiId, { phase: 'ready', progress: 1, message: churned ? 'Refresh complete' : 'No content change', updated_at: now() });
+    await setStatus(wikiId, { phase: 'ready', progress: 1, message: churned ? 'Refresh complete' : 'No content change', updated_at: now() });
     await store.appendLog(wikiId, `refresh: regenerated ${itemsToWrite.length} pages (content ${churned ? 'changed' : 'unchanged'})`);
   } catch (e) {
     await store.appendLog(wikiId, `refresh error: ${e?.message || e}`);
-    await store.updateStatus(wikiId, { phase: 'error', progress: 0, error: String(e?.message || e), updated_at: now() });
+    await setStatus(wikiId, { phase: 'error', progress: 0, error: String(e?.message || e), updated_at: now() });
   } finally {
     inflight.delete(wikiId);
   }
@@ -368,21 +376,25 @@ client.registerFunction(
 // Each is jailed to one wiki's clone; the page-writer harness calls these via
 // agent_trigger to explore the repo and cite exact line ranges.
 
+// Surface the harness's file exploration as live activity. During planning
+// (one long opaque plan turn) there is no page progress, so without this the UI
+// sits static and reads as frozen. Each read/list/grep pushes a cheap activity
+// frame the panel shows as the current line ("reading src/queue.js").
 client.registerFunction(
   'openwiki::src::read',
-  async ({ id, path, from, to }) => srcRead(id, path, from, to),
+  async ({ id, path, from, to }) => { pushProgress(id, { kind: 'activity', op: 'read', path }); return srcRead(id, path, from, to); },
   { description: "Read a file (optional 1-indexed line window) from a wiki's cloned repo.", request_format: S.SRC_READ_REQ, response_format: S.SRC_READ_RES },
 );
 
 client.registerFunction(
   'openwiki::src::list',
-  async ({ id, dir }) => srcList(id, dir),
+  async ({ id, dir }) => { pushProgress(id, { kind: 'activity', op: 'list', path: dir || '.' }); return srcList(id, dir); },
   { description: "List files (path, language, priority) in a wiki's cloned repo.", request_format: S.SRC_LIST_REQ, response_format: S.SRC_LIST_RES },
 );
 
 client.registerFunction(
   'openwiki::src::grep',
-  async ({ id, pattern, max }) => srcGrep(id, pattern, max),
+  async ({ id, pattern, max }) => { pushProgress(id, { kind: 'activity', op: 'grep', path: pattern }); return srcGrep(id, pattern, max); },
   { description: "Search file contents in a wiki's cloned repo.", request_format: S.SRC_GREP_REQ, response_format: S.SRC_GREP_RES },
 );
 
@@ -516,6 +528,42 @@ client.registerFunction('openwiki::http::refresh', async ({ path_params }) => {
   return jsonResponse(200, r);
 }, HTTP_META('HTTP POST /openwiki/api/wikis/:id/refresh'));
 
+// SSE live progress: stream generation events over the HTTP response channel.
+client.registerFunction('openwiki::http::events', async (req) => {
+  const wikiId = req?.path_params?.id;
+  const w = req?.response;
+  if (!w || !w.stream) return jsonResponse(200, { error: 'streaming unsupported' });
+  const ctl = (o) => { try { w.sendMessage(JSON.stringify(o)); } catch { /* ignore */ } };
+  ctl({ type: 'set_status', status_code: 200 });
+  ctl({ type: 'set_headers', headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' } });
+
+  let closed = false;
+  let off = null;
+  let hb = null;
+  const stop = () => {
+    if (closed) return;
+    closed = true;
+    if (hb) clearInterval(hb);
+    if (off) off();
+    try { w.close(); } catch { /* ignore */ }
+  };
+  // The channel socket can close under us when the client navigates away. A
+  // write then emits an ASYNC 'error' event on the Writable — a try/catch around
+  // write() cannot catch it, and unhandled it crashes the whole worker. Listen
+  // for it, and never write once closed.
+  try { w.stream.on('error', stop); } catch { /* ignore */ }
+  const write = (s) => { if (closed) return; try { w.stream.write(s); } catch { stop(); } };
+  const send = (evt) => write(`data: ${JSON.stringify(evt)}\n\n`);
+
+  const snap = await store.getStatus(wikiId);
+  if (snap) send({ kind: 'status', ...snap });
+  off = onProgress(wikiId, send);
+  hb = setInterval(() => write(': ping\n\n'), 15_000);
+  if (snap && (snap.phase === 'ready' || snap.phase === 'error')) { send({ kind: 'status', ...snap, final: true }); stop(); }
+  try { req.request_body?.stream?.on?.('close', stop); } catch { /* ignore */ }
+  return null;
+}, HTTP_META('HTTP GET /openwiki/api/wikis/:id/events (SSE live progress)'));
+
 client.registerFunction('openwiki::http::ask', async ({ path_params, body }) => {
   const p = parseBody(body);
   if (!p.q) return jsonResponse(400, { error: 'q required' });
@@ -543,6 +591,7 @@ bind('openwiki::http::pages-list', 'openwiki/api/wikis/:id/pages', 'GET');
 bind('openwiki::http::page-get', 'openwiki/api/wikis/:id/pages/:slug', 'GET');
 bind('openwiki::http::search', 'openwiki/api/wikis/:id/search', 'GET');
 bind('openwiki::http::refresh', 'openwiki/api/wikis/:id/refresh', 'POST');
+bind('openwiki::http::events', 'openwiki/api/wikis/:id/events', 'GET');
 bind('openwiki::http::ask', 'openwiki/api/wikis/:id/ask', 'POST');
 bind('openwiki::http::diagram', 'openwiki/api/wikis/:id/diagram', 'GET');
 
@@ -573,6 +622,27 @@ configuration.registerConfig(client)
   .then((c) => { cfg = c; })
   .catch((e) => console.warn('[openwiki] config register failed; using defaults', e?.message || e));
 configuration.bindConfigTrigger(client, async () => { cfg = await configuration.fetchConfig(client); });
+
+// Reap generations orphaned by a restart. On a fresh boot nothing is in-flight,
+// so any wiki still flagged generating was interrupted mid-run. Clear the flag,
+// reconcile page_count to what actually landed on disk, and mark the status so
+// the UI stops showing a forever-running progress panel. The partial pages that
+// were written stay browsable. Runs off the boot path.
+(async () => {
+  try {
+    const wikis = await store.listWikis();
+    for (const w of wikis) {
+      if (!w.generating || inflight.has(w.id)) continue;
+      const pages = await store.listPages(w.id).catch(() => []);
+      await store.saveWiki(w.id, { ...w, generating: false, page_count: pages.length, updated_at: now() });
+      await store.updateStatus(w.id, {
+        phase: pages.length ? 'ready' : 'error', progress: pages.length ? 1 : 0,
+        message: `Interrupted by a restart with ${pages.length} page(s). Refresh to complete.`, updated_at: now(),
+      });
+      await store.appendLog(w.id, `Reaped orphaned generation (${pages.length} pages on disk).`);
+    }
+  } catch (e) { console.warn('[openwiki] reaper failed', e?.message || e); }
+})();
 
 console.log('[openwiki] worker ready — model default =', cfg.model, 'iii url =', III_URL);
 

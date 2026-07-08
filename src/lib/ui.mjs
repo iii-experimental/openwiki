@@ -15,12 +15,12 @@ export const INDEX_HTML = String.raw`<!doctype html>
   :root{
     --bg:#f2f0ed; --panel:#e9e6e2; --panel-2:#ebe8e3; --border:#d8d5d0;
     --rule-2:#e6e3df; --text:#0a0a0a; --text-dim:#6b6865; --ink-ghost:#a3a09c;
-    --accent:#ff5a1f; --accent-2:#ff5a1f; --accent-fg:#f2f0ed;
+    --accent:#b8420f; --accent-2:#b8420f; --accent-fg:#f2f0ed;
     --danger:#c43e1c; --warn:#a87a00;
   }
   [data-theme="dark"]{
     --bg:#111110; --panel:#1a1916; --panel-2:#1f1e1c; --border:#2a2926;
-    --rule-2:#1f1e1c; --text:#f2f0ed; --text-dim:#9c9893; --ink-ghost:#5d5a55;
+    --rule-2:#1f1e1c; --text:#f2f0ed; --text-dim:#a8a49e; --ink-ghost:#8a8782;
     --accent:#3ea8ff; --accent-2:#3ea8ff; --accent-fg:#111110;
     --danger:#c43e1c; --warn:#a87a00;
   }
@@ -40,19 +40,21 @@ export const INDEX_HTML = String.raw`<!doctype html>
     grid-template-areas:"top top" "side main"} .rail{display:none}}
 
   /* right rail: on-this-page + relevant sources + copy + freshness */
-  .rail{grid-area:rail;border-left:1px solid var(--border);background:var(--panel);
-    overflow-y:auto;padding:20px 16px;display:flex;flex-direction:column;gap:18px}
-  .rail-sec h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;
-    color:var(--text-dim);font-weight:600}
-  .rail a{display:block;color:var(--text-dim);font-size:12px;padding:2px 0;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .rail a:hover{color:var(--accent)}
-  .rail a.h3{padding-left:12px}
+  .rail{grid-area:rail;border-left:1px solid var(--border);background:var(--bg);
+    overflow-y:auto;padding:22px 18px;display:flex;flex-direction:column;gap:22px}
+  .rail.empty-rail{display:none}
+  @media (max-width:1100px){.rail{display:none}}
+  .rail-sec h4{margin:0 0 10px;font-size:10px;text-transform:uppercase;letter-spacing:.14em;
+    color:var(--ink-ghost);font-weight:600}
+  .rail a{display:block;color:var(--text-dim);font-size:12px;padding:3px 0;line-height:1.45;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:1px solid transparent;padding-left:10px;margin-left:-1px}
+  .rail a:hover{color:var(--text);border-left-color:var(--accent)}
+  .rail a.h3{padding-left:22px;font-size:11.5px}
   .rail .src{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-  .rail .fresh{font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px}
-  .copymd{background:var(--panel-2);border:1px solid var(--border);color:var(--text);
-    padding:6px 10px;font-size:12px;text-transform:lowercase;width:100%;text-align:left}
-  .copymd:hover{border-color:var(--accent)}
+  .rail .fresh{font-size:11.5px;color:var(--text-dim);display:flex;align-items:center;gap:6px}
+  .copymd{background:transparent;border:1px solid var(--border);color:var(--text-dim);
+    padding:8px 10px;font-size:11px;text-transform:lowercase;letter-spacing:.06em;width:100%;text-align:left;border-radius:0}
+  .copymd:hover{border-color:var(--accent);color:var(--text)}
 
   /* nested nav tree */
   .nav-folder{margin-top:4px}
@@ -66,24 +68,24 @@ export const INDEX_HTML = String.raw`<!doctype html>
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:1px solid transparent;outline:none}
   .nav-leaf:hover{color:var(--text)}
   .nav-leaf.active{color:var(--accent);border-color:var(--accent)}
-  .topbar{grid-area:top;display:flex;align-items:center;gap:16px;padding:0 16px;
-    background:var(--panel);border-bottom:1px solid var(--border)}
-  .brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.2px}
-  .brand-dot{width:10px;height:10px;border-radius:50%;
-    background:linear-gradient(135deg,var(--accent),var(--accent-2));
-    box-shadow:0 0 12px rgba(124,156,255,.5)}
-  .breadcrumb{color:var(--text-dim);font-size:13px;flex:0 1 auto;
+  .topbar{grid-area:top;display:flex;align-items:center;gap:14px;padding:0 18px;
+    background:var(--bg);border-bottom:1px solid var(--border)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:.3px;font-size:13px}
+  .brand-dot{width:8px;height:8px;border-radius:0;background:var(--accent)}
+  .breadcrumb{color:var(--text-dim);font-size:12.5px;flex:0 1 auto;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .breadcrumb .sep{margin:0 8px;opacity:.5}
   .top-spacer{flex:1}
+  .wiki-actions{display:none;align-items:center;gap:8px}
+  .wiki-actions.on{display:flex}
   .search{position:relative}
-  .search input{width:280px;background:var(--panel-2);border:1px solid var(--border);
-    border-radius:6px;padding:6px 10px;color:var(--text);outline:none;transition:border .15s}
+  .search input{width:240px;background:transparent;border:1px solid var(--border);
+    border-radius:0;padding:6px 10px;color:var(--text);outline:none;transition:border .15s}
   .search input:focus{border-color:var(--accent)}
-  .search input::placeholder{color:var(--text-dim)}
-  .tbtn{background:var(--panel-2);border:1px solid var(--border);border-radius:6px;
-    padding:6px 12px;color:var(--text);margin-left:8px}
-  .tbtn:hover:not(:disabled){border-color:var(--accent)}
+  .search input::placeholder{color:var(--ink-ghost)}
+  .tbtn{background:transparent;border:1px solid var(--border);border-radius:0;
+    padding:6px 14px;color:var(--text-dim);text-transform:lowercase;letter-spacing:.04em}
+  .tbtn:hover:not(:disabled){border-color:var(--accent);color:var(--text)}
   .tbtn:disabled{opacity:.4;cursor:not-allowed}
   .cites{margin-top:28px;border-top:1px solid var(--border);padding-top:14px}
   .cites h3{font-size:11px;text-transform:uppercase;letter-spacing:.07em;
@@ -111,24 +113,26 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .side-section h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;
     letter-spacing:.08em;color:var(--text-dim);font-weight:600}
   .newwiki{display:flex;flex-direction:column;gap:8px}
-  .newwiki input{background:var(--panel-2);border:1px solid var(--border);
-    border-radius:6px;padding:8px 10px;outline:none;color:var(--text)}
+  .newwiki input{background:transparent;border:1px solid var(--border);
+    border-radius:0;padding:8px 10px;outline:none;color:var(--text)}
+  .newwiki input::placeholder{color:var(--ink-ghost)}
   .newwiki input:focus{border-color:var(--accent)}
-  .newwiki button{background:linear-gradient(135deg,var(--accent),var(--accent-2));
-    color:#0e0e11;border:0;border-radius:6px;padding:8px 12px;font-weight:600}
-  .newwiki button:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.4)}
+  .newwiki button{background:var(--accent);color:var(--accent-fg);border:1px solid var(--accent);
+    border-radius:0;padding:8px 12px;font-weight:600;text-transform:lowercase;letter-spacing:.04em}
+  .newwiki button:disabled{background:transparent;color:var(--ink-ghost);border-color:var(--border);cursor:not-allowed}
 
-  .wikilist{display:flex;flex-direction:column;gap:2px}
-  .wiki-item{padding:8px 10px;border-radius:6px;cursor:pointer;
-    display:flex;flex-direction:column;gap:2px;border:1px solid transparent}
-  .wiki-item:hover{background:var(--panel-2)}
-  .wiki-item.active{background:var(--panel-2);border-color:var(--border)}
+  .wikilist{display:flex;flex-direction:column;gap:1px}
+  .wiki-item{padding:9px 10px;border-radius:0;cursor:pointer;
+    display:flex;flex-direction:column;gap:3px;border:1px solid transparent;border-left:2px solid transparent}
+  .wiki-item:hover{background:var(--panel)}
+  .wiki-item.active{background:var(--panel);border-left-color:var(--accent)}
   .wiki-item .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .wiki-item .meta{font-size:11px;color:var(--text-dim)}
-  .wiki-item .progressbar{margin-top:6px;height:4px;background:#2a2a33;
-    border-radius:2px;overflow:hidden}
-  .wiki-item .progressbar > div{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));
-    transition:width .3s}
+  .wiki-item .meta{font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums}
+  .wiki-item .genrow{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--accent);
+    text-transform:lowercase;letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  .wiki-item .genrow.error{color:var(--danger)}
+  .wiki-item .progressbar{margin-top:5px;height:3px;background:var(--rule-2);overflow:hidden}
+  .wiki-item .progressbar > div{height:100%;background:var(--accent);transition:width .3s}
 
   .cat{margin-top:6px}
   .cat-head{display:flex;align-items:center;gap:6px;padding:6px 4px;cursor:pointer;
@@ -173,27 +177,62 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .md hr{border:0;border-top:1px solid var(--border);margin:1.5em 0}
   .md img{max-width:100%;border-radius:6px}
   .md a{color:var(--accent)}
-  .md table{border-collapse:collapse;margin:.8em 0}
-  .md th,.md td{border:1px solid var(--border);padding:6px 10px}
+  .md .tablewrap{overflow-x:auto;margin:1.1em 0;border:1px solid var(--border)}
+  .md table{border-collapse:collapse;width:100%;font-size:12.5px}
+  .md th,.md td{border-bottom:1px solid var(--rule-2);border-right:1px solid var(--rule-2);
+    padding:7px 12px;text-align:left;vertical-align:top;line-height:1.5}
+  .md th:last-child,.md td:last-child{border-right:0}
+  .md tbody tr:last-child td{border-bottom:0}
+  .md thead th{background:var(--panel);font-weight:600;border-bottom:1px solid var(--border);
+    text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--text-dim)}
 
   .hero{display:flex;flex-direction:column;align-items:center;justify-content:center;
     text-align:center;height:100%;color:var(--text-dim);gap:12px}
-  .hero h1{margin:0;font-size:28px;color:var(--text);
-    background:linear-gradient(135deg,var(--accent),var(--accent-2));
-    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .hero h1{margin:0;font-size:28px;color:var(--text)}
   .hero p{margin:0;max-width:420px}
 
   .banner{position:fixed;top:60px;left:50%;transform:translateX(-50%);
     background:rgba(255,107,107,.14);border:1px solid var(--danger);
-    color:#ffbcbc;padding:8px 14px;border-radius:6px;font-size:13px;z-index:100;
-    box-shadow:0 8px 24px rgba(0,0,0,.4)}
+    color:#ffbcbc;padding:8px 14px;border-radius:6px;font-size:13px;z-index:100}
 
-  .spinner{width:14px;height:14px;border:2px solid var(--border);
-    border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;
-    display:inline-block;vertical-align:middle}
-  @keyframes spin{to{transform:rotate(360deg)}}
+  /* iii motion vocabulary (storybook.iii.dev): no spin. busy = pulse ring,
+     opacity pulse, hard blink, gradient shimmer. */
+  .spinner{display:inline-block;width:6px;height:6px;border-radius:9999px;
+    background:var(--accent);vertical-align:middle;animation:pulse-dot 1.6s ease-out infinite}
+  .dot{display:inline-block;width:6px;height:6px;border-radius:9999px;flex-shrink:0;background:var(--accent)}
+  .dot.pulse{animation:pulse-dot 1.6s ease-out infinite}
+  @keyframes pulse-dot{0%{box-shadow:0 0 0 0 var(--accent)}to{box-shadow:0 0 0 8px transparent}}
+  @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+  @keyframes ow-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  @keyframes pulse-op{50%{opacity:.5}}
+  .caret{display:inline-block;width:6px;height:13px;background:var(--text);vertical-align:middle;
+    margin-left:2px;animation:blink 1s step-end infinite}
+  .shimmer{background-image:linear-gradient(90deg,var(--ink-ghost),var(--text) 50%,var(--ink-ghost));
+    background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+    animation:ow-shimmer 2.4s linear infinite}
+  .pulse-op{animation:pulse-op 2s cubic-bezier(.4,0,.6,1) infinite}
 
-  .phase{font-size:11px;color:var(--accent);text-transform:capitalize;margin-top:2px}
+  /* live generation console (storybook install-progress pattern) */
+  .owgen{width:100%;max-width:640px;border:1px solid var(--border);background:var(--bg);text-align:left}
+  .owgen .head{background:var(--panel);border-bottom:1px solid var(--rule-2);padding:7px 14px;
+    font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--ink-ghost);
+    display:flex;align-items:center;gap:8px}
+  .owgen .body{padding:16px 14px;display:flex;flex-direction:column;gap:14px}
+  .owgen .owbar{display:flex;height:6px;width:100%;overflow:hidden;background:var(--rule-2)}
+  .owgen .owbar>i{display:block;height:100%;background:var(--accent);transition:width .3s}
+  .owgen .owbar>i.fail{background:var(--danger)}
+  .owgen .barlabel{display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);
+    text-transform:lowercase;letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  .owgen .console{background:var(--bg);font-size:12.5px;line-height:1.6;display:flex;flex-direction:column;gap:3px}
+  .owgen .stage{display:flex;align-items:baseline;gap:8px;color:var(--text-dim)}
+  .owgen .stage.done{color:var(--text)} .owgen .stage.fail{color:var(--danger)}
+  .owgen .stage .glyph{color:var(--ink-ghost);width:10px;display:inline-block}
+  .owgen .stage.done .glyph{color:var(--accent)}
+  .owgen .stage .pct{margin-left:auto;color:var(--ink-ghost);font-variant-numeric:tabular-nums}
+  .owgen .working{color:var(--ink-ghost);font-size:12.5px}
+  .owgen .lastpage{font-size:13px;line-height:1.7;color:var(--text-dim);font-style:italic}
+
+  .phase{font-size:11px;color:var(--accent);text-transform:lowercase;letter-spacing:.04em;margin-top:2px}
   .phase.error{color:var(--danger)}
 
   .footer{padding:16px 0 0;border-top:1px solid var(--border);margin-top:auto;
@@ -204,7 +243,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.6);
     display:flex;align-items:center;justify-content:center;z-index:200}
   .modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;
-    max-width:520px;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+    max-width:520px;padding:24px}
   .modal h2{margin:0 0 10px}
   .modal button{margin-top:14px;background:var(--panel-2);border:1px solid var(--border);
     color:var(--text);border-radius:6px;padding:6px 12px}
@@ -212,17 +251,16 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .empty{color:var(--text-dim);font-size:12px;padding:8px 4px}
 
   /* --- drafting-sheet enforcement (the law) --- */
-  /* radii: only 0 or full. boxes -> 0; dots/spinner keep their round. */
+  /* radii: only 0 or full. boxes -> 0; dots keep their round. */
   input,button,.chip,.modal,.wiki-item,.page-item,.tbtn,.search input,
   .newwiki input,.newwiki button,.ask-input,.mermaid-box,.banner,
   .cites a,.cites span.nolink{border-radius:0}
   /* single rationed accent: no gradients, no glows, no shadows. */
   .brand-dot{background:var(--accent);box-shadow:none}
-  .newwiki button{background:var(--accent);color:var(--accent-fg);filter:none;font-weight:600}
-  .newwiki button:disabled{background:var(--panel-2);color:var(--text-dim);filter:none}
+  .newwiki button:disabled{background:transparent;color:var(--ink-ghost);filter:none}
   .wiki-item .progressbar>div{background:var(--accent)}
-  /* active = accent border + text, never a fill. */
-  .wiki-item.active,.page-item.active{background:transparent;border-color:var(--accent);color:var(--accent)}
+  /* active = accent left-rule, never a fill flood. */
+  .page-item.active{color:var(--accent)}
   .hero h1{background:none;-webkit-text-fill-color:var(--text);color:var(--text)}
   .modal,.banner{box-shadow:none}
   .md a,a{color:var(--accent)}
@@ -237,11 +275,12 @@ export const INDEX_HTML = String.raw`<!doctype html>
     <div class="brand"><span class="brand-dot"></span>OpenWiki</div>
     <div class="breadcrumb" id="breadcrumb"></div>
     <div class="top-spacer"></div>
-    <div class="search">
-      <input id="search" type="search" placeholder="search this wiki" disabled />
+    <div class="wiki-actions" id="wiki-actions">
+      <div class="search">
+        <input id="search" type="search" placeholder="search this wiki" disabled />
+      </div>
+      <button class="tbtn" id="ask-btn" disabled>ask</button>
     </div>
-    <button class="tbtn" id="ask-btn" disabled>Ask</button>
-    <button class="tbtn" id="diagram-btn" disabled>Diagram</button>
     <button class="tbtn" id="theme-btn">dark</button>
   </div>
   <aside class="sidebar">
@@ -265,7 +304,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     </div>
   </aside>
   <main class="main" id="main"></main>
-  <aside class="rail" id="rail"></aside>
+  <aside class="rail empty-rail" id="rail"></aside>
 </div>
 
 <script>
@@ -511,6 +550,35 @@ export const INDEX_HTML = String.raw`<!doctype html>
         continue;
       }
 
+      // GFM table: a header row with pipes, then a separator row (---, with
+      // optional :align:). Without this, pipe rows fall through to a paragraph
+      // and render as a raw "| a | b |" blob.
+      if (line.includes('|') && i + 1 < lines.length
+          && /-/.test(lines[i + 1]) && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
+        flushPara();
+        out += closeLists(listStack);
+        const splitRow = (r) => r.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, '|').trim());
+        const header = splitRow(line);
+        const aligns = splitRow(lines[i + 1]).map((c) => {
+          const l = c.startsWith(':'), rt = c.endsWith(':');
+          return l && rt ? 'center' : rt ? 'right' : l ? 'left' : '';
+        });
+        i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].includes('|') && !/^\s*$/.test(lines[i])) { rows.push(splitRow(lines[i])); i++; }
+        const cell = (tag, text, ci) => '<' + tag + (aligns[ci] ? ' style="text-align:' + aligns[ci] + '"' : '') + '>' + inline(text || '') + '</' + tag + '>';
+        let tbl = '<div class="tablewrap"><table><thead><tr>';
+        header.forEach((c, ci) => { tbl += cell('th', c, ci); });
+        tbl += '</tr></thead><tbody>';
+        for (const row of rows) {
+          tbl += '<tr>';
+          for (let ci = 0; ci < header.length; ci++) tbl += cell('td', row[ci], ci);
+          tbl += '</tr>';
+        }
+        out += tbl + '</tbody></table></div>';
+        continue;
+      }
+
       // list item
       const li = line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
       if (li) {
@@ -593,21 +661,30 @@ export const INDEX_HTML = String.raw`<!doctype html>
   }
 
   function renderWikiItem(w, gen) {
+    const generating = gen && gen.phase && gen.phase !== 'ready';
+    const err = generating && gen.phase === 'error';
     const node = el('div', {
       class: 'wiki-item' + (state.currentWikiId === w.id ? ' active' : ''),
       onclick: () => selectWiki(w.id),
-    },
-      el('div', { class:'name', text: w.repo_name || w.id }),
-      el('div', { class:'meta', text: (w.page_count || 0) + ' pages' + (w.category_count ? ' \u00b7 ' + w.category_count + ' categories' : '') }),
-    );
-    if (gen && gen.phase && gen.phase !== 'ready') {
+    }, el('div', { class:'name', text: w.repo_name || w.id }));
+    // While generating, the stored page_count is stale (0 until finalize). Show
+    // the live count from the progress stream instead of a confusing "0 pages".
+    if (generating && !err) {
+      const total = gen.pages_total || 0;
+      const done = gen.pages_done || 0;
+      const count = total ? (done + ' / ' + total + ' pages') : (gen.phase + '\u2026');
+      node.appendChild(el('div', { class:'meta', text: count }));
+    } else {
+      node.appendChild(el('div', { class:'meta',
+        text: (w.page_count || 0) + ' pages' + (w.category_count ? ' \u00b7 ' + w.category_count + ' categories' : '') }));
+    }
+    if (generating) {
       const pct = Math.round((gen.progress || 0) * 100);
-      node.appendChild(el('div', { class:'phase' + (gen.phase === 'error' ? ' error' : ''),
-        text: (gen.phase === 'error' ? 'error: ' + (gen.message || 'failed') : gen.phase + ' \u2014 ' + pct + '%') }));
-      if (gen.phase !== 'error') {
-        const bar = el('div', { class:'progressbar' }, el('div', { style: 'width:' + pct + '%' }));
-        node.appendChild(bar);
-      }
+      const row = el('div', { class:'genrow' + (err ? ' error' : '') });
+      if (!err) row.appendChild(el('span', { class:'dot pulse' }));
+      row.appendChild(el('span', { text: err ? ('error: ' + (gen.message || 'failed')) : (gen.phase + ' \u00b7 ' + pct + '%') }));
+      node.appendChild(row);
+      if (!err) node.appendChild(el('div', { class:'progressbar' }, el('div', { style: 'width:' + pct + '%' })));
     }
     return node;
   }
@@ -631,43 +708,71 @@ export const INDEX_HTML = String.raw`<!doctype html>
     pollStatus(wid);
   }
 
+  // Live generation progress. Prefer SSE push (real-time); fall back to polling.
   function pollStatus(wid) {
     if (state.pollTimers.has(wid)) return;
-    const tick = async () => {
-      let st;
-      try {
-        st = await api('/wikis/' + wid + '/status');
-      } catch (e) {
-        state.generating.set(wid, { phase: 'error', progress: 0, message: e.message });
-        renderWikiList();
-        clearInterval(state.pollTimers.get(wid));
-        state.pollTimers.delete(wid);
-        return;
-      }
+    const cur = () => state.generating.get(wid) || {};
+    const applyStatus = (evt) => {
+      const c = cur();
       state.generating.set(wid, {
-        phase: st.phase,
-        progress: st.progress || 0,
-        message: st.message || st.error,
-        repo_name: state.generating.get(wid) && state.generating.get(wid).repo_name,
+        phase: evt.phase, progress: evt.progress || 0, message: evt.message || evt.error,
+        pages_done: evt.pages_done != null ? evt.pages_done : c.pages_done,
+        pages_total: evt.pages_total != null ? evt.pages_total : c.pages_total,
+        lastPage: c.lastPage, repo_name: c.repo_name,
       });
       renderWikiList();
-      if (wid === state.currentWikiId && st.phase !== 'ready') renderMainProgress(state.generating.get(wid));
-      if (st.phase === 'ready' || st.phase === 'error') {
-        clearInterval(state.pollTimers.get(wid));
-        state.pollTimers.delete(wid);
-        if (st.phase === 'error') {
-          if (wid === state.currentWikiId) renderMainProgress(state.generating.get(wid));
-          flashError('Generation failed: ' + (st.error || st.message || 'unknown'));
-        } else {
-          state.generating.delete(wid);
-          await loadWikis();
-          selectWiki(wid);
-        }
+      if (wid === state.currentWikiId && evt.phase !== 'ready') renderMainProgress(state.generating.get(wid));
+    };
+    const finish = (evt) => {
+      if (evt.phase === 'error') {
+        if (wid === state.currentWikiId) renderMainProgress(cur());
+        flashError('Generation failed: ' + (evt.error || evt.message || 'unknown'));
+      } else {
+        state.generating.delete(wid);
+        loadWikis().then(() => selectWiki(wid));
       }
     };
+
+    if (typeof EventSource !== 'undefined') {
+      let es = null;
+      try { es = new EventSource('/openwiki/api/wikis/' + wid + '/events'); } catch (_) { es = null; }
+      if (es) {
+        const stop = () => { try { es.close(); } catch (_) { /* ignore */ } state.pollTimers.delete(wid); };
+        state.pollTimers.set(wid, { stop });
+        es.onmessage = (m) => {
+          let evt; try { evt = JSON.parse(m.data); } catch (_) { return; }
+          if (evt.kind === 'page') {
+            const g = cur(); g.lastPage = evt.title || evt.slug; g.message = 'wrote ' + (evt.title || evt.slug);
+            state.generating.set(wid, g);
+            if (wid === state.currentWikiId) renderMainProgress(g);
+            return;
+          }
+          if (evt.kind === 'activity') {
+            const g = cur(); g.activity = evt.op + ' ' + (evt.path || '');
+            state.generating.set(wid, g);
+            if (wid === state.currentWikiId) renderMainProgress(g);
+            return;
+          }
+          applyStatus(evt);
+          if (evt.phase === 'ready' || evt.phase === 'error' || evt.final) { stop(); finish(evt); }
+        };
+        es.onerror = () => { /* EventSource auto-reconnects; server re-seeds on connect */ };
+        return;
+      }
+    }
+
+    // Poll fallback.
+    const stopPoll = () => { const h = state.pollTimers.get(wid); if (h && h.timer) clearInterval(h.timer); state.pollTimers.delete(wid); };
+    const tick = async () => {
+      let st;
+      try { st = await api('/wikis/' + wid + '/status'); }
+      catch (e) { state.generating.set(wid, { phase: 'error', progress: 0, message: e.message }); renderWikiList(); stopPoll(); return; }
+      applyStatus(st);
+      if (st.phase === 'ready' || st.phase === 'error') { stopPoll(); finish(st); }
+    };
+    const timer = setInterval(tick, 1500);
+    state.pollTimers.set(wid, { timer, stop: stopPoll });
     tick();
-    const t = setInterval(tick, 1500);
-    state.pollTimers.set(wid, t);
   }
 
   //--- select wiki / page
@@ -684,7 +789,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     setHash(id, slugHint || null);
     $('search').disabled = false;
     $('ask-btn').disabled = false;
-    $('diagram-btn').disabled = false;
+    $('wiki-actions').classList.add('on');
     try {
       const [wiki, pages] = await Promise.all([
         api('/wikis/' + id),
@@ -867,16 +972,47 @@ export const INDEX_HTML = String.raw`<!doctype html>
 
   function renderMainProgress(gen) {
     const g = gen || { phase: 'queued', progress: 0 };
-    const pct = Math.round((g.progress || 0) * 100);
     const err = g.phase === 'error';
-    const bar = err ? '' : '<div style="height:4px;width:280px;background:var(--panel-2);border:1px solid var(--border);margin-top:12px"><div style="height:100%;background:var(--accent);transition:width .3s;width:' + pct + '%"></div></div>';
+    const pct = Math.round((g.progress || 0) * 100);
+    const done = g.pages_done || 0;
+    const total = g.pages_total || 0;
+    const order = ['cloning', 'inventorying', 'planning', 'generating'];
+    const label = {
+      cloning: 'clone repository', inventorying: 'read source files',
+      planning: 'plan structure', generating: total ? ('write pages ' + done + '/' + total) : 'write pages',
+    };
+    let cur = order.indexOf(g.phase);
+    if (cur < 0) cur = 0;
+    const stages = order.map((ph, i) => {
+      let st = '';
+      if (i < cur) st = 'done';
+      else if (i === cur) st = err ? 'fail' : 'run';
+      const glyph = st === 'done' ? '✓' : st === 'fail' ? '×' : st === 'run' ? '→' : '·';
+      const cls = st === 'done' ? ' done' : st === 'fail' ? ' fail' : '';
+      const pctTag = (st === 'run' && ph === 'generating' && total)
+        ? '<span class="pct">' + Math.round((done / total) * 100) + '%</span>' : '';
+      return '<div class="stage' + cls + '"><span class="glyph">' + glyph + '</span><span>' + label[ph] + '</span>' + pctTag + '</div>';
+    }).join('');
+    const working = err
+      ? '<div class="stage fail"><span class="glyph">×</span><span>' + escapeHtml(g.message || 'generation failed') + '</span></div>'
+      : (g.activity
+        ? '<div class="working"><span class="glyph" style="color:var(--accent)">→</span> <span class="shimmer">' + escapeHtml(g.activity) + '</span></div>'
+        : '<div class="working pulse-op">· working…</div>');
+    const lastPage = (!err && g.lastPage)
+      ? '<div class="lastpage"><span class="shimmer">' + escapeHtml(g.lastPage) + '</span><span class="caret"></span></div>' : '';
+    const failBar = err ? '<i class="fail" style="width:' + Math.max(pct, 6) + '%"></i>' : '';
     $('main').innerHTML =
       '<div class="hero">' +
-      (err ? '' : '<div class="spinner"></div>') +
-      '<h1>' + (err ? 'generation failed' : 'generating…') + '</h1>' +
-      '<div class="phase' + (err ? ' error' : '') + '">' + escapeHtml((g.phase || 'working') + (err ? '' : ' — ' + pct + '%')) + '</div>' +
-      bar +
-      (g.message ? '<p>' + escapeHtml(g.message) + '</p>' : '') +
+        '<div class="owgen">' +
+          '<div class="head">' + (err ? '<span class="dot" style="background:var(--danger)"></span>' : '<span class="dot pulse"></span>') +
+            (err ? 'generation interrupted' : 'generating wiki') + '</div>' +
+          '<div class="body">' +
+            '<div class="owbar">' + (err ? failBar : '<i style="width:' + pct + '%"></i>') + '</div>' +
+            '<div class="barlabel"><span>' + escapeHtml(g.phase || 'working') + '</span><span>' + pct + '%</span></div>' +
+            '<div class="console">' + stages + working + '</div>' +
+            lastPage +
+          '</div>' +
+        '</div>' +
       '</div>';
     renderRail(null);
   }
@@ -922,7 +1058,8 @@ export const INDEX_HTML = String.raw`<!doctype html>
     const rail = $('rail');
     if (!rail) return;
     rail.textContent = '';
-    if (!page || page === 'loading') return;
+    if (!page || page === 'loading') { rail.classList.add('empty-rail'); return; }
+    rail.classList.remove('empty-rail');
     const wiki = state.currentWiki;
     if (wiki) {
       const sec = el('div', { class:'rail-sec' });
@@ -1045,36 +1182,6 @@ export const INDEX_HTML = String.raw`<!doctype html>
     setTimeout(() => input.focus(), 0);
   }
 
-  //--- diagram modal (mermaid rendered on demand from a CDN; falls back to source)
-  async function openDiagram() {
-    if (!state.currentWikiId) return;
-    const back = el('div', { class:'modal-back', onclick: (e) => { if (e.target === back) back.remove(); } });
-    const area = el('div', { class:'mermaid-box' }, el('div', { class:'spinner' }));
-    const box = el('div', { class:'modal wide' },
-      el('h2', { text:'Architecture diagram' }),
-      area,
-      el('button', { onclick: () => back.remove(), text:'Close' }),
-    );
-    back.appendChild(box);
-    document.body.appendChild(back);
-    try {
-      const res = await api('/wikis/' + state.currentWikiId + '/diagram');
-      const code = res.mermaid || '';
-      area.textContent = '';
-      try {
-        const mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
-        const mermaid = mod.default;
-        mermaid.initialize({ startOnLoad:false, theme:'dark' });
-        const { svg } = await mermaid.render('owd' + Date.now(), code);
-        area.innerHTML = svg;
-      } catch (_) {
-        const pre = el('pre'); pre.textContent = code; area.appendChild(pre);
-      }
-    } catch (e) {
-      area.textContent = 'Diagram failed: ' + e.message;
-    }
-  }
-
   //--- init
   function bindUI() {
     const input = $('repo-url');
@@ -1090,7 +1197,6 @@ export const INDEX_HTML = String.raw`<!doctype html>
     });
     $('search').addEventListener('input', onSearchInput);
     $('ask-btn').addEventListener('click', openAsk);
-    $('diagram-btn').addEventListener('click', openDiagram);
     const themeBtn = $('theme-btn');
     const applyTheme = (t) => {
       document.documentElement.setAttribute('data-theme', t);

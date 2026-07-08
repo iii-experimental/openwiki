@@ -80,31 +80,36 @@ function buildUserPrompt({ wikiId, outlineItem, repoName, repoUrl, categories, a
   return prompt;
 }
 
-// One harness turn (spawn under the plan session when given, else a top-level
-// send). Returns the mapped page.
-async function runPageTurn(client, { message, model, provider, parentSessionId, options, timeoutMs, outlineItem, repoUrl, commit }) {
-  let sessionId = null;
-  if (parentSessionId) {
-    try {
-      const r = await client.trigger({
-        function_id: 'harness::spawn',
-        payload: { task: message, model, ...(provider ? { provider } : {}), parent_session_id: parentSessionId, options },
-        timeoutMs: 30_000,
-      });
-      sessionId = r?.child_session_id || null;
-    } catch { sessionId = null; }
+// One harness turn for a page. Runs in a named child session titled with the
+// page, linked to the plan session via metadata.parent_session_id — the same
+// linkage shape harness uses for real sub-agents, so the console renders each
+// page as a titled child under the wiki's plan session (not an opaque s_… id).
+// harness::spawn is not used here: a direct spawn call has no parent (it links
+// only when dispatched from inside a running turn), so it can neither name nor
+// nest. send + SessionInit does both.
+async function runPageTurn(client, { message, model, provider, parentSessionId, childSessionId, title, options, timeoutMs, outlineItem, repoUrl, commit }) {
+  const payload = { message, model, ...(provider ? { provider } : {}), options };
+  if (childSessionId) {
+    payload.session_id = childSessionId;
+    payload.session = {
+      title: title || outlineItem.title,
+      ...(parentSessionId ? { metadata: { parent_session_id: parentSessionId, depth: 1 } } : {}),
+    };
   }
-  if (!sessionId) {
-    const r = await client.trigger({
-      function_id: 'harness::send',
-      payload: { message, model, ...(provider ? { provider } : {}), options },
-      timeoutMs: 30_000,
-    });
-    sessionId = r?.session_id;
-  }
+  const r = await client.trigger({ function_id: 'harness::send', payload, timeoutMs: 30_000 });
+  const sessionId = r?.session_id;
   if (!sessionId) throw new Error('harness::send returned no session_id');
   const result = await awaitTurn(client, sessionId, { timeoutMs });
   return mapResult(result, { outlineItem, repoUrl, commit });
+}
+
+// A session id is any stable string; the console shows the title, not the id.
+// Keep ids readable and greppable so a whole wiki's turns share a prefix.
+export function sessionSlug(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48);
+}
+export function wikiParentSession(repoName, wikiId) {
+  return 'openwiki:' + (sessionSlug(repoName) || 'repo') + ':' + String(wikiId || '').slice(0, 6);
 }
 
 // Poll harness::status until the turn is terminal; return its output-contract
@@ -173,12 +178,16 @@ export async function generatePageViaHarness(client, opts) {
     max_turns: maxTurns,
   };
 
+  // Name the page's session under the plan session so the console shows a
+  // titled child per page instead of a fresh opaque id. Repair attempts reuse
+  // the same session, so retries read as follow-up turns on that page.
+  const childSessionId = parentSessionId ? parentSessionId + '/' + outlineItem.slug : null;
   let feedback = '';
   let previousMarkdown = '';
   let best = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const message = buildUserPrompt({ wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles, feedback, previousMarkdown });
-    const out = await runPageTurn(client, { message, model, provider, parentSessionId, options, timeoutMs, outlineItem, repoUrl, commit });
+    const out = await runPageTurn(client, { message, model, provider, parentSessionId, childSessionId, title: outlineItem.title, options, timeoutMs, outlineItem, repoUrl, commit });
     const issues = getPageQualityIssues(out.markdown, { minWords });
     best = out;
     if (!issues.length || attempt === maxAttempts) {
@@ -212,17 +221,22 @@ const PLAN_SYSTEM =
 // Plan a wiki by having the harness explore the clone (openwiki::src::*), so the
 // structure reflects the real repo rather than a heuristic template. Throws when
 // the harness is unavailable; the caller falls back to the router/heuristic plan.
-export async function planViaHarness(client, { wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 24, timeoutMs = 300_000 }) {
+export async function planViaHarness(client, { wikiId, repoName, repoUrl, model, docsHint = '', parentSessionId, maxTurns = 24, timeoutMs = 300_000 }) {
   const resolved = await resolveModel(client, model);
   if (!resolved.resolved) throw new Error('no model available for harness plan');
+  const parent = parentSessionId || wikiParentSession(repoName, wikiId);
   const message =
     `Repository: ${repoName} (${repoUrl})\n` +
     `Wiki id (pass as "id" to every openwiki::src::* call): ${wikiId}` +
     (docsHint || '') +
     '\nExplore the repository, then return the wiki plan JSON.';
+  // The plan runs in the wiki's named parent session; page turns link to it, so
+  // the console shows one titled tree per wiki instead of scattered s_… ids.
   const { session_id } = await client.trigger({
     function_id: 'harness::send',
     payload: {
+      session_id: parent,
+      session: { title: 'openwiki: ' + repoName },
       message,
       model: resolved.model,
       ...(resolved.provider ? { provider: resolved.provider } : {}),
@@ -231,7 +245,6 @@ export async function planViaHarness(client, { wikiId, repoName, repoUrl, model,
         output: { type: 'json', schema: PLAN_HARNESS_OUT },
         functions: { allow: ['openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
         max_turns: maxTurns,
-        max_children: 64, // page sub-agents spawn under this session
       },
     },
     timeoutMs: 30_000,
