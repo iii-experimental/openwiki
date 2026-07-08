@@ -249,6 +249,7 @@ export async function planViaHarness(client, { wikiId, repoName, repoUrl, model,
     },
     timeoutMs: 30_000,
   });
+  if (!session_id) throw new Error('harness::send returned no session_id for plan');
   const result = await awaitTurn(client, session_id, { timeoutMs });
   if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('harness returned an empty plan');
   return {
