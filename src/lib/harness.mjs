@@ -87,7 +87,7 @@ function buildUserPrompt({ wikiId, outlineItem, repoName, repoUrl, categories, a
 // harness::spawn is not used here: a direct spawn call has no parent (it links
 // only when dispatched from inside a running turn), so it can neither name nor
 // nest. send + SessionInit does both.
-async function runPageTurn(client, { message, model, provider, parentSessionId, childSessionId, title, options, timeoutMs, outlineItem, repoUrl, commit }) {
+async function runPageTurn(worker, { message, model, provider, parentSessionId, childSessionId, title, options, timeoutMs, outlineItem, repoUrl, commit }) {
   const payload = { message, model, ...(provider ? { provider } : {}), options };
   if (childSessionId) {
     payload.session_id = childSessionId;
@@ -96,10 +96,10 @@ async function runPageTurn(client, { message, model, provider, parentSessionId, 
       ...(parentSessionId ? { metadata: { parent_session_id: parentSessionId, depth: 1 } } : {}),
     };
   }
-  const r = await client.trigger({ function_id: 'harness::send', payload, timeoutMs: 30_000 });
+  const r = await worker.trigger({ function_id: 'harness::send', payload, timeoutMs: 30_000 });
   const sessionId = r?.session_id;
   if (!sessionId) throw new Error('harness::send returned no session_id');
-  const result = await awaitTurn(client, sessionId, { timeoutMs });
+  const result = await awaitTurn(worker, sessionId, { timeoutMs });
   return mapResult(result, { outlineItem, repoUrl, commit });
 }
 
@@ -114,12 +114,12 @@ export function wikiParentSession(repoName, wikiId) {
 
 // Poll harness::status until the turn is terminal; return its output-contract
 // result. Throws on failure/timeout (best-effort stop on timeout).
-export async function awaitTurn(client, session_id, { timeoutMs = 240_000, intervalMs = 1500 } = {}) {
+export async function awaitTurn(worker, session_id, { timeoutMs = 240_000, intervalMs = 1500 } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     let s;
     try {
-      s = await client.trigger({ function_id: 'harness::status', payload: { session_id } });
+      s = await worker.trigger({ function_id: 'harness::status', payload: { session_id } });
     } catch (e) {
       throw new Error('harness::status failed: ' + (e?.message || e));
     }
@@ -129,7 +129,7 @@ export async function awaitTurn(client, session_id, { timeoutMs = 240_000, inter
       throw new Error('harness turn ' + status + (s?.result_error ? ': ' + s.result_error : ''));
     }
     if (Date.now() > deadline) {
-      try { await client.trigger({ function_id: 'harness::stop', payload: { session_id } }); } catch { /* best effort */ }
+      try { await worker.trigger({ function_id: 'harness::stop', payload: { session_id } }); } catch { /* best effort */ }
       throw new Error('harness turn timed out');
     }
     await sleep(intervalMs);
@@ -165,7 +165,7 @@ export function mapResult(result, { outlineItem, repoUrl, commit }) {
 
 // Generate one page, then run a deterministic quality gate and, if it fails,
 // repair by re-prompting with the exact failing reasons (up to maxAttempts).
-export async function generatePageViaHarness(client, opts) {
+export async function generatePageViaHarness(worker, opts) {
   const {
     wikiId, outlineItem, repoName, repoUrl, commit, categories, allSlugs, allTitles,
     model, provider, parentSessionId, maxTurns = 12, timeoutMs = 240_000,
@@ -187,7 +187,7 @@ export async function generatePageViaHarness(client, opts) {
   let best = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const message = buildUserPrompt({ wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles, feedback, previousMarkdown });
-    const out = await runPageTurn(client, { message, model, provider, parentSessionId, childSessionId, title: outlineItem.title, options, timeoutMs, outlineItem, repoUrl, commit });
+    const out = await runPageTurn(worker, { message, model, provider, parentSessionId, childSessionId, title: outlineItem.title, options, timeoutMs, outlineItem, repoUrl, commit });
     const issues = getPageQualityIssues(out.markdown, { minWords });
     best = out;
     if (!issues.length || attempt === maxAttempts) {
@@ -208,14 +208,14 @@ export async function generatePageViaHarness(client, opts) {
 // can collect every page via a single {parent_session_id: root} subscription
 // (a plain send emits parent_session_id: null — harness send.rs). The child
 // reads source itself via openwiki::src::*; openwiki pre-reads nothing.
-export async function spawnPageChild(client, opts) {
+export async function spawnPageChild(worker, opts) {
   const {
     wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles,
     model, provider, rootSessionId, feedback = '', previousMarkdown = '', maxTurns = 12,
   } = opts;
   const childSessionId = rootSessionId + '/' + outlineItem.slug;
   const message = buildUserPrompt({ wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles, feedback, previousMarkdown });
-  const r = await client.trigger({
+  const r = await worker.trigger({
     function_id: 'harness::spawn',
     payload: {
       task: message,
@@ -282,8 +282,8 @@ const WIKI_ORCHESTRATOR_OUT = {
 // Drive the whole generation as one native agentic session. Returns the wiki the
 // orchestrator assembled from its sub-agents, plus the root session id (page
 // children nest under it in the console).
-export async function runOrchestrator(client, { wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 60, timeoutMs = 600_000 }) {
-  const resolved = await resolveModel(client, model);
+export async function runOrchestrator(worker, { wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 60, timeoutMs = 600_000 }) {
+  const resolved = await resolveModel(worker, model);
   if (!resolved.resolved) throw new Error('no model available for the orchestrator');
   const root = wikiParentSession(repoName, wikiId);
   const message =
@@ -291,7 +291,7 @@ export async function runOrchestrator(client, { wikiId, repoName, repoUrl, model
     `Wiki id (pass as "id" to every openwiki::src::* call, and use "${root}/<slug>" as each sub-agent's session_id): ${wikiId}` +
     (docsHint || '') +
     '\nExplore, decide the pages, spawn a page-writer sub-agent per page, then submit the wiki.';
-  const { session_id } = await client.trigger({
+  const { session_id } = await worker.trigger({
     function_id: 'harness::send',
     payload: {
       session_id: root,
@@ -309,7 +309,7 @@ export async function runOrchestrator(client, { wikiId, repoName, repoUrl, model
     timeoutMs: 30_000,
   });
   if (!session_id) throw new Error('orchestrator send returned no session_id');
-  const result = await awaitTurn(client, session_id, { timeoutMs });
+  const result = await awaitTurn(worker, session_id, { timeoutMs });
   if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('orchestrator returned no pages');
   return { summary: result.summary || '', navigation: Array.isArray(result.navigation) ? result.navigation : [], pages: result.pages, sessionId: session_id };
 }
@@ -333,7 +333,7 @@ const CHILD_PAGE_SCHEMA = {
 // so openwiki collects them exactly as before (turnbus). The parent's policy
 // must allow BOTH harness::spawn (to spawn) AND openwiki::src::* (children
 // subset the parent's policy — Agent gotcha), else page-writers can read nothing.
-export async function sendSpawnDirective(client, { rootSessionId, wikiId, outline, model, provider, childMaxTurns = 12 }) {
+export async function sendSpawnDirective(worker, { rootSessionId, wikiId, outline, model, provider, childMaxTurns = 12 }) {
   // Lightweight: name the pages, let the model spawn naturally. The harness's
   // own system prompt already teaches harness::spawn; we do not embed schemas or
   // rigid templates (that bloats the turn and the agent chokes reproducing it).
@@ -342,7 +342,7 @@ export async function sendSpawnDirective(client, { rootSessionId, wikiId, outlin
     'Now write the wiki you just planned. For EACH page below, spawn one page-writer sub-agent with harness::spawn — put all the spawns in THIS message so they run in parallel. Do not write any page yourself.\n\n' +
     `Each sub-agent: tell it to write that one page, reading source with openwiki::src::read / openwiki::src::list / openwiki::src::grep (id="${wikiId}"), with a "Relevant Source Files" section and path:line citations. Give each spawn session_id="${rootSessionId}/<slug>", allow it only the openwiki::src::* functions, and set its output contract to {"type":"json","schema":{"type":"object","properties":{"markdown":{"type":"string"}},"required":["markdown"]}} so it returns the page as {markdown}.\n\n` +
     'Pages:\n' + rows + '\n\nWhen every sub-agent has finished, reply: done.';
-  await client.trigger({
+  await worker.trigger({
     function_id: 'harness::send',
     payload: {
       session_id: rootSessionId,
@@ -378,8 +378,8 @@ const PLAN_SYSTEM =
 // Plan a wiki by having the harness explore the clone (openwiki::src::*), so the
 // structure reflects the real repo rather than a heuristic template. Throws when
 // the harness is unavailable; the caller falls back to the router/heuristic plan.
-export async function planViaHarness(client, { wikiId, repoName, repoUrl, model, docsHint = '', parentSessionId, maxTurns = 24, timeoutMs = 300_000, maxAttempts = 3, onRetry }) {
-  const resolved = await resolveModel(client, model);
+export async function planViaHarness(worker, { wikiId, repoName, repoUrl, model, docsHint = '', parentSessionId, maxTurns = 24, timeoutMs = 300_000, maxAttempts = 3, onRetry }) {
+  const resolved = await resolveModel(worker, model);
   if (!resolved.resolved) throw new Error('no model available for harness plan');
   const base = parentSessionId || wikiParentSession(repoName, wikiId);
   const message =
@@ -396,7 +396,7 @@ export async function planViaHarness(client, { wikiId, repoName, repoUrl, model,
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const parent = attempt === 1 ? base : base + ':r' + attempt;
     try {
-      const { session_id } = await client.trigger({
+      const { session_id } = await worker.trigger({
         function_id: 'harness::send',
         payload: {
           session_id: parent,
@@ -414,7 +414,7 @@ export async function planViaHarness(client, { wikiId, repoName, repoUrl, model,
         timeoutMs: 30_000,
       });
       if (!session_id) throw new Error('harness::send returned no session_id for plan');
-      const result = await awaitTurn(client, session_id, { timeoutMs });
+      const result = await awaitTurn(worker, session_id, { timeoutMs });
       if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('harness returned an empty plan');
       return {
         summary: result.summary || '',
@@ -431,14 +431,14 @@ export async function planViaHarness(client, { wikiId, repoName, repoUrl, model,
 }
 
 // Tiered page writer: harness (agentic, cited) -> router/heuristic (generate.mjs).
-export async function generatePageAny(client, opts) {
+export async function generatePageAny(worker, opts) {
   if (opts.wikiId && opts.model && opts.useHarness !== false) {
     try {
-      const out = await generatePageViaHarness(client, opts);
+      const out = await generatePageViaHarness(worker, opts);
       if (String(out?.markdown || '').trim()) return out;
     } catch (e) {
       if (typeof opts.onFallback === 'function') opts.onFallback(e);
     }
   }
-  return generatePage(client, opts);
+  return generatePage(worker, opts);
 }

@@ -28,11 +28,11 @@ function runLocal(cmd, args, opts = {}) {
 // Run a command via shell::exec; fall back to local child_process when the
 // shell worker is unreachable. A non-zero exit is surfaced (never falls back —
 // that would double-run side effects like a clone).
-async function sh(client, command, args, { cwd, timeoutMs } = {}) {
-  if (client) {
+async function sh(worker, command, args, { cwd, timeoutMs } = {}) {
+  if (worker) {
     let res = null;
     try {
-      res = await client.trigger({
+      res = await worker.trigger({
         function_id: 'shell::exec',
         payload: {
           command,
@@ -65,34 +65,34 @@ export function repoName(repoUrl) {
   return parts[parts.length - 1] || u;
 }
 
-export async function cloneRepo(client, repoUrl, destDir, ref) {
+export async function cloneRepo(worker, repoUrl, destDir, ref) {
   const args = ['clone', '--depth', '1'];
   if (ref) args.push('--branch', ref);
   args.push(repoUrl, destDir);
-  await sh(client, 'git', args, { timeoutMs: 120_000 });
-  const { stdout } = await sh(client, 'git', ['-C', destDir, 'rev-parse', 'HEAD']);
+  await sh(worker, 'git', args, { timeoutMs: 120_000 });
+  const { stdout } = await sh(worker, 'git', ['-C', destDir, 'rev-parse', 'HEAD']);
   return { commit: stdout.trim(), dir: destDir, name: repoName(repoUrl), url: repoUrl };
 }
 
-export async function currentCommit(client, dir) {
-  const { stdout } = await sh(client, 'git', ['-C', dir, 'rev-parse', 'HEAD']);
+export async function currentCommit(worker, dir) {
+  const { stdout } = await sh(worker, 'git', ['-C', dir, 'rev-parse', 'HEAD']);
   return stdout.trim();
 }
 
 // Best-effort update of an existing clone. Returns the new HEAD, or null on
 // failure (caller decides whether to re-clone).
-export async function gitPull(client, dir) {
+export async function gitPull(worker, dir) {
   try {
-    await sh(client, 'git', ['-C', dir, 'fetch', '--depth', '1', 'origin'], { timeoutMs: 120_000 });
-    await sh(client, 'git', ['-C', dir, 'reset', '--hard', 'FETCH_HEAD']);
-    return await currentCommit(client, dir);
+    await sh(worker, 'git', ['-C', dir, 'fetch', '--depth', '1', 'origin'], { timeoutMs: 120_000 });
+    await sh(worker, 'git', ['-C', dir, 'reset', '--hard', 'FETCH_HEAD']);
+    return await currentCommit(worker, dir);
   } catch {
     return null;
   }
 }
 
-export async function gitDiff(client, dir, baseRef, headRef = 'HEAD') {
-  const { stdout } = await sh(client, 'git', ['-C', dir, 'diff', '--name-status', `${baseRef}..${headRef}`]);
+export async function gitDiff(worker, dir, baseRef, headRef = 'HEAD') {
+  const { stdout } = await sh(worker, 'git', ['-C', dir, 'diff', '--name-status', `${baseRef}..${headRef}`]);
   return parseNameStatus(stdout);
 }
 

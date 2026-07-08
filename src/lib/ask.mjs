@@ -70,9 +70,9 @@ async function relevantSlugs(id, q, n = 5) {
   return pages.slice(0, n).map((p) => p.slug);
 }
 
-async function askFastLLM(client, { q, blocks, model }) {
+async function askFastLLM(worker, { q, blocks, model }) {
   const context = blocks.map((b) => `## ${b.title || b.slug}\n${b.excerpt}`).join('\n\n');
-  const res = await client.trigger({
+  const res = await worker.trigger({
     function_id: 'router::complete',
     payload: {
       model,
@@ -88,8 +88,8 @@ async function askFastLLM(client, { q, blocks, model }) {
   return text;
 }
 
-async function askDeep(client, { id, q, model }) {
-  const { session_id } = await client.trigger({
+async function askDeep(worker, { id, q, model }) {
+  const { session_id } = await worker.trigger({
     function_id: 'harness::send',
     payload: {
       message: `Answer this question about the repository, citing exact files: ${q}\nUse id="${id}" for the openwiki::* read functions.`,
@@ -102,7 +102,7 @@ async function askDeep(client, { id, q, model }) {
     },
     timeoutMs: 30_000,
   });
-  const result = await awaitTurn(client, session_id, { timeoutMs: 240_000 });
+  const result = await awaitTurn(worker, session_id, { timeoutMs: 240_000 });
   const text = typeof result === 'string' ? result : (result?.answer || result?.markdown || '');
   if (!String(text).trim()) throw new Error('empty answer');
   return String(text).trim();
@@ -119,7 +119,7 @@ async function fileAnswer(id, q, answer, citations) {
   return slug;
 }
 
-export async function askWiki(client, { id, q, mode = 'fast', file_answer = false, model }) {
+export async function askWiki(worker, { id, q, mode = 'fast', file_answer = false, model }) {
   const meta = await store.getWiki(id);
   if (!meta) throw notFound();
   if (!q || !String(q).trim()) return { answer: '', citations: [] };
@@ -137,13 +137,13 @@ export async function askWiki(client, { id, q, mode = 'fast', file_answer = fals
   let answer = null;
   try {
     answer = mode === 'deep'
-      ? await askDeep(client, { id, q, model: model || meta.model })
-      : await askFastLLM(client, { q, blocks, model: model || meta.model });
+      ? await askDeep(worker, { id, q, model: model || meta.model })
+      : await askFastLLM(worker, { q, blocks, model: model || meta.model });
   } catch { answer = null; }
   // Fast mode uses router::complete; if that path is down, try the harness
   // (streaming) before dropping to the heuristic stitch.
   if (!answer && mode !== 'deep') {
-    try { answer = await askDeep(client, { id, q, model: model || meta.model }); } catch { answer = null; }
+    try { answer = await askDeep(worker, { id, q, model: model || meta.model }); } catch { answer = null; }
   }
   if (!answer) answer = heuristicAnswer(q, blocks);
 

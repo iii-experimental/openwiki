@@ -25,13 +25,13 @@ export function pickModel(models, preferred) {
   };
 }
 
-export async function resolveModel(client, preferred) {
+export async function resolveModel(worker, preferred) {
   const key = preferred || '';
   if (cache.has(key)) return cache.get(key);
 
   let models = [];
   try {
-    const res = await client.trigger({ function_id: 'router::models::list', payload: {} });
+    const res = await worker.trigger({ function_id: 'router::models::list', payload: {} });
     models = res?.models || (Array.isArray(res) ? res : []);
   } catch {
     // router unavailable — fall back to the preferred id unresolved; harness
