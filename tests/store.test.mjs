@@ -53,3 +53,48 @@ test('status stamps updated_at; log appends and caps', async () => {
   assert.equal(log.length, 2);
   assert.match(log[1], /done/);
 });
+
+test('pagesForPaths maps changed files to affected pages (source_paths + citations)', async () => {
+  store.setClient(mockClient());
+  await store.savePage('w1', 'a', '# A', { slug: 'a', title: 'A', category: 'c', source_paths: ['src/a.ts'] });
+  await store.savePage('w1', 'b', '# B', { slug: 'b', title: 'B', category: 'c', citations: [{ path: 'src/b.ts', start_line: 1 }] });
+  await store.savePage('w1', 'c', '# C', { slug: 'c', title: 'C', category: 'c', source_paths: ['src/shared.ts'] });
+  await store.savePage('w1', 'd', '# D', { slug: 'd', title: 'D', category: 'c', source_paths: ['src/shared.ts'] });
+  assert.deepEqual((await store.pagesForPaths('w1', ['src/a.ts'])).sort(), ['a']);
+  assert.deepEqual((await store.pagesForPaths('w1', ['src/b.ts'])).sort(), ['b']);
+  assert.deepEqual((await store.pagesForPaths('w1', ['src/shared.ts'])).sort(), ['c', 'd']);
+  assert.deepEqual(await store.pagesForPaths('w1', ['nope.ts']), []);
+  assert.deepEqual(await store.pagesForPaths('w1', []), []);
+});
+
+test('computeContentHash is order-independent and content-sensitive', async () => {
+  store.setClient(mockClient());
+  await store.savePage('w1', 'a', 'A body', { slug: 'a', title: 'A', category: 'c' });
+  await store.savePage('w1', 'b', 'B body', { slug: 'b', title: 'B', category: 'c' });
+  const h1 = await store.computeContentHash('w1');
+
+  store.setClient(mockClient()); // fresh store, pages written in the other order
+  await store.savePage('w1', 'b', 'B body', { slug: 'b', title: 'B', category: 'c' });
+  await store.savePage('w1', 'a', 'A body', { slug: 'a', title: 'A', category: 'c' });
+  assert.equal(await store.computeContentHash('w1'), h1);
+
+  await store.savePage('w1', 'a', 'A body CHANGED', { slug: 'a', title: 'A', category: 'c' });
+  assert.notEqual(await store.computeContentHash('w1'), h1);
+});
+
+test('listPages reads the side-index, never enumerates page bodies', async () => {
+  const base = mockClient();
+  let pageListCalls = 0;
+  const spy = {
+    async trigger(req) {
+      if (req.function_id === 'state::list' && String(req.payload?.scope || '').startsWith('openwiki:pages:')) pageListCalls++;
+      return base.trigger(req);
+    },
+  };
+  store.setClient(spy);
+  await store.savePage('w1', 'a', '# A body', { slug: 'a', title: 'A', category: 'c' });
+  await store.savePage('w1', 'b', '# B body', { slug: 'b', title: 'B', category: 'c' });
+  const pages = await store.listPages('w1');
+  assert.equal(pages.length, 2);
+  assert.equal(pageListCalls, 0);
+});
