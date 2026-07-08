@@ -155,6 +155,29 @@ export const WIKIS_RES = {
   properties: { wikis: { type: 'array', items: WIKI_META } },
 };
 
+export const MODELS_REQ = { type: 'object', additionalProperties: false, properties: {} };
+export const MODELS_RES = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['models', 'default_model'],
+  properties: {
+    models: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'provider'],
+        properties: {
+          id: { type: 'string' },
+          provider: { type: 'string' },
+          supports_structured_output: { type: 'boolean' },
+        },
+      },
+    },
+    default_model: { type: 'string' },
+  },
+};
+
 export const WIKI_REQ = ID_REQ;
 export const WIKI_RES = WIKI_META;
 
