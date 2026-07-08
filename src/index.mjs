@@ -20,6 +20,7 @@ import { askWiki } from './lib/ask.mjs';
 import { makeDiagram } from './lib/diagram.mjs';
 import { exportAgentsMd } from './lib/agents_md.mjs';
 import { normalizePlan } from './lib/nav.mjs';
+import { fetchDocsIndex, docsHint as buildDocsHint } from './lib/docs_oracle.mjs';
 import { INDEX_HTML } from './lib/ui.mjs';
 import * as configuration from './lib/configuration.mjs';
 import * as S from './lib/schemas.mjs';
@@ -43,6 +44,13 @@ function err(code, message) {
   const e = new Error(message || code);
   e.code = code;
   return e;
+}
+
+async function readRepoReadme(dir) {
+  for (const name of ['README.md', 'README.mdx', 'readme.md', 'Readme.md']) {
+    try { return await fs.readFile(dir + '/' + name, 'utf8'); } catch { /* try next */ }
+  }
+  return '';
 }
 
 function inferRepoName(url) {
@@ -123,9 +131,15 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     await store.appendLog(wikiId, `Inventoried ${inventory.length} files.`);
 
     await store.updateStatus(wikiId, { phase: 'planning', progress: 0.25, message: 'Exploring repo and planning structure', updated_at: now() });
+    let dHint = '';
+    try {
+      const readme = await readRepoReadme(dir);
+      const docsIndex = await fetchDocsIndex(client, { repoUrl, readme, repoDir: dir });
+      if (docsIndex) { dHint = buildDocsHint(docsIndex); await store.appendLog(wikiId, `docs oracle: ${docsIndex.linkCount} topics (${docsIndex.source})`); }
+    } catch { /* oracle is optional */ }
     let planned = null;
     try {
-      planned = await planViaHarness(client, { wikiId, repoName: name, repoUrl, model });
+      planned = await planViaHarness(client, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
     } catch (e) {
       await store.appendLog(wikiId, `harness plan fallback (${e?.message || e})`);
     }

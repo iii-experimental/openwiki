@@ -209,13 +209,14 @@ const PLAN_SYSTEM =
 // Plan a wiki by having the harness explore the clone (openwiki::src::*), so the
 // structure reflects the real repo rather than a heuristic template. Throws when
 // the harness is unavailable; the caller falls back to the router/heuristic plan.
-export async function planViaHarness(client, { wikiId, repoName, repoUrl, model, maxTurns = 24, timeoutMs = 300_000 }) {
+export async function planViaHarness(client, { wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 24, timeoutMs = 300_000 }) {
   const resolved = await resolveModel(client, model);
   if (!resolved.resolved) throw new Error('no model available for harness plan');
   const message =
     `Repository: ${repoName} (${repoUrl})\n` +
-    `Wiki id (pass as "id" to every openwiki::src::* call): ${wikiId}\n` +
-    'Explore the repository, then return the wiki plan JSON.';
+    `Wiki id (pass as "id" to every openwiki::src::* call): ${wikiId}` +
+    (docsHint || '') +
+    '\nExplore the repository, then return the wiki plan JSON.';
   const { session_id } = await client.trigger({
     function_id: 'harness::send',
     payload: {
