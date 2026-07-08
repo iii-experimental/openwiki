@@ -19,6 +19,7 @@ import { lintWiki } from './lib/lint.mjs';
 import { askWiki } from './lib/ask.mjs';
 import { makeDiagram } from './lib/diagram.mjs';
 import { exportAgentsMd } from './lib/agents_md.mjs';
+import { normalizePlan } from './lib/nav.mjs';
 import { INDEX_HTML } from './lib/ui.mjs';
 import * as configuration from './lib/configuration.mjs';
 import * as S from './lib/schemas.mjs';
@@ -129,27 +130,29 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
       await store.appendLog(wikiId, `harness plan fallback (${e?.message || e})`);
     }
     if (!planned) planned = await planWiki(client, { inventory, repoName: name, repoUrl, model, repoDir: dir, steer });
-    const summary = planned.summary || '';
-    // Validate cited paths against the real inventory; drop categories with no pages.
+    const parentSessionId = planned && planned.sessionId;
+    const norm = normalizePlan(planned);
+    const summary = norm.summary;
+    const navigation = norm.navigation;
+    // Validate cited paths against the real inventory.
     const invPaths = new Set(inventory.map((e) => e.relPath));
-    const outline = (planned.outline || []).map((item) => ({
+    const outline = norm.outline.map((item) => ({
       ...item,
       source_paths: (item.source_paths || []).filter((p) => invPaths.has(p)),
     }));
-    const usedCats = new Set(outline.map((o) => o.category));
-    const categories = (planned.categories || []).filter((c) => usedCats.has(c.id));
-    await store.saveOutline(wikiId, { categories, items: outline });
+    const categories = navigation.map((l1) => ({ id: l1.title, title: l1.title }));
+    await store.saveOutline(wikiId, { navigation, categories, items: outline });
 
     const meta0 = {
       id: wikiId, repo_url: repoUrl, repo_name: name, ref: ref || '', commit,
       created_at: started, updated_at: now(),
       page_count: outline.length, category_count: categories.length,
-      categories, summary, model, steer: steer || undefined, generating: true,
+      categories, navigation, summary, model, steer: steer || undefined, generating: true,
     };
     await store.saveWiki(wikiId, meta0);
     await store.appendLog(wikiId, `Planned ${outline.length} pages across ${categories.length} categories.`);
 
-    await writePages(wikiId, { dir, itemsToWrite: outline, fullOutline: outline, categories, repoName: name, repoUrl, model, commit, parentSessionId: planned && planned.sessionId });
+    await writePages(wikiId, { dir, itemsToWrite: outline, fullOutline: outline, categories, repoName: name, repoUrl, model, commit, parentSessionId });
 
     const content_hash = await store.computeContentHash(wikiId);
     await store.saveWiki(wikiId, { ...meta0, updated_at: now(), content_hash, generating: false });

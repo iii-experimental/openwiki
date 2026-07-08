@@ -40,6 +40,7 @@ export const WIKI_META = {
     model: STRING,
     generating: BOOL,
     content_hash: STRING,
+    navigation: { type: 'array', items: { type: 'object', additionalProperties: true } },
   },
 };
 
@@ -324,27 +325,33 @@ export const PAGE_HARNESS_OUT = {
 
 // ---------- harness plan output contract ----------
 // The JSON a harness turn returns when planning a wiki after exploring the repo.
+// navigation is a nested tree (folder = title + children, no slug; leaf = title
+// + slug); pages is the flat list of leaves to generate.
+const NAV_LEAF = { type: 'object', additionalProperties: false, required: ['title', 'slug'], properties: { title: STRING, slug: STRING } };
+const NAV_L2 = { type: 'object', additionalProperties: false, required: ['title'], properties: { title: STRING, slug: STRING, children: { type: 'array', items: NAV_LEAF } } };
+const NAV_L1 = { type: 'object', additionalProperties: false, required: ['title'], properties: { title: STRING, slug: STRING, children: { type: 'array', items: NAV_L2 } } };
+
 export const PLAN_HARNESS_OUT = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'categories', 'outline'],
+  required: ['summary', 'pages', 'navigation'],
   properties: {
     summary: STRING,
-    categories: {
-      type: 'array',
-      items: { type: 'object', additionalProperties: false, required: ['id', 'title'], properties: { id: STRING, title: STRING, description: STRING } },
-    },
-    outline: {
+    pages: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['slug', 'title', 'category'],
-        properties: { slug: STRING, title: STRING, category: STRING, brief: STRING, source_paths: { type: 'array', items: STRING } },
+        required: ['slug', 'title'],
+        properties: { slug: STRING, title: STRING, brief: STRING, source_paths: { type: 'array', items: STRING } },
       },
     },
+    navigation: { type: 'array', items: NAV_L1 },
   },
 };
+
+// Nav tree node as stored on the wiki and read by the UI.
+export const NAV_NODE = NAV_L1;
 
 // ---------- MCP structure surface ----------
 export const MCP_STRUCTURE_RES = {
