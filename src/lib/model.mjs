@@ -25,13 +25,13 @@ export function pickModel(models, preferred) {
   };
 }
 
-export async function resolveModel(client, preferred) {
+export async function resolveModel(worker, preferred) {
   const key = preferred || '';
   if (cache.has(key)) return cache.get(key);
 
   let models = [];
   try {
-    const res = await client.trigger({ function_id: 'router::models::list', payload: {} });
+    const res = await worker.trigger({ function_id: 'router::models::list', payload: {} });
     models = res?.models || (Array.isArray(res) ? res : []);
   } catch {
     // router unavailable — fall back to the preferred id unresolved; harness
@@ -47,10 +47,10 @@ export function clearModelCache() { cache.clear(); }
 // The router's live model catalog, trimmed to what the UI's picker needs.
 // Returns [] when llm-router is absent (no provider configured), which the UI
 // treats as "set up a provider in the console".
-export async function listModels(client) {
+export async function listModels(worker) {
   let models = [];
   try {
-    const res = await client.trigger({ function_id: 'router::models::list', payload: {} });
+    const res = await worker.trigger({ function_id: 'router::models::list', payload: {} });
     models = res?.models || (Array.isArray(res) ? res : []);
   } catch {
     return [];

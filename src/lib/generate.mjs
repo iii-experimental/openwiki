@@ -77,7 +77,7 @@ function buildFileTree(inventory) {
     .join('\n');
 }
 
-async function planWikiLLM(client, { inventory, repoName, repoUrl, model = 'claude-sonnet-4-6' }) {
+async function planWikiLLM(worker, { inventory, repoName, repoUrl, model = 'claude-sonnet-4-6' }) {
   const fileTree = buildFileTree(inventory);
   const keyDocs = await buildKeyDocs(inventory);
 
@@ -94,7 +94,7 @@ async function planWikiLLM(client, { inventory, repoName, repoUrl, model = 'clau
     'FILE TREE (priority desc):\n' + fileTree + '\n\n' +
     'KEY DOCS:\n' + keyDocs;
 
-  const res = await client.trigger({
+  const res = await worker.trigger({
     function_id: 'router::complete',
     payload: {
       model,
@@ -151,7 +151,7 @@ async function planWikiLLM(client, { inventory, repoName, repoUrl, model = 'clau
 }
 
 async function generatePageLLM(
-  client,
+  worker,
   { outlineItem, sourceReads, allSlugs, allTitles, categories, repoName, repoUrl, model = 'claude-sonnet-4-6' },
 ) {
   const cat = (categories ?? []).find((c) => c.id === outlineItem.category);
@@ -177,7 +177,7 @@ async function generatePageLLM(
     'Sibling pages you may link to (slug — title):\n' + siblings + '\n\n' +
     'SOURCE FILES (verbatim, may be truncated):\n' + sourceBlocks;
 
-  const res = await client.trigger({
+  const res = await worker.trigger({
     function_id: 'router::complete',
     payload: {
       model,
@@ -209,9 +209,9 @@ async function generatePageLLM(
 // ------- LLM+heuristic wrappers -------
 import { planWikiHeuristic, generatePageHeuristic } from './heuristic.mjs';
 
-export async function planWiki(client, opts) {
+export async function planWiki(worker, opts) {
   try {
-    return await planWikiLLM(client, opts);
+    return await planWikiLLM(worker, opts);
   } catch (e) {
     console.warn('[openwiki] planWiki LLM failed (' + (e?.message || e) + '); using heuristic fallback');
     return await planWikiHeuristic({
@@ -223,9 +223,9 @@ export async function planWiki(client, opts) {
   }
 }
 
-export async function generatePage(client, opts) {
+export async function generatePage(worker, opts) {
   try {
-    const out = await generatePageLLM(client, opts);
+    const out = await generatePageLLM(worker, opts);
     const md = String(out?.markdown || '').trim();
     if (!md) throw new Error('LLM returned empty markdown');
     return out;

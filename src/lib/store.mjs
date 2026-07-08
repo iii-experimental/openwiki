@@ -16,9 +16,9 @@ import crypto from 'node:crypto';
 const REPO_ROOT = process.env.OPENWIKI_DATA || '/tmp/openwiki-data';
 export const repoDir = (id) => path.join(REPO_ROOT, 'repos', id);
 
-let client = null;
-/** Wire the iii client used for all state calls. Call once at startup. */
-export function setClient(c) { client = c; }
+let worker = null;
+/** Wire the iii worker used for all state calls. Call once at startup. */
+export function setWorker(c) { worker = c; }
 
 const S_WIKIS = 'openwiki:wikis';
 const S_STATUS = 'openwiki:status';
@@ -28,20 +28,20 @@ const S_PAGE_INDEX = 'openwiki:page-index'; // wikiId -> [{ slug, meta, hash }]
 const pagesScope = (id) => `openwiki:pages:${id}`;
 
 async function sget(scope, key) {
-  const res = await client.trigger({ function_id: 'state::get', payload: { scope, key } });
+  const res = await worker.trigger({ function_id: 'state::get', payload: { scope, key } });
   return res == null ? null : res;
 }
 async function sset(scope, key, value) {
-  await client.trigger({ function_id: 'state::set', payload: { scope, key, value } });
+  await worker.trigger({ function_id: 'state::set', payload: { scope, key, value } });
 }
 async function slist(scope) {
-  const res = await client.trigger({ function_id: 'state::list', payload: { scope } });
+  const res = await worker.trigger({ function_id: 'state::list', payload: { scope } });
   if (Array.isArray(res)) return res;
   if (res && Array.isArray(res.values)) return res.values;
   return [];
 }
 async function sdel(scope, key) {
-  try { await client.trigger({ function_id: 'state::delete', payload: { scope, key } }); }
+  try { await worker.trigger({ function_id: 'state::delete', payload: { scope, key } }); }
   catch { /* best effort */ }
 }
 

@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as store from '../src/lib/store.mjs';
 
-// In-memory mock of the iii client's state:: functions.
-function mockClient() {
+// In-memory mock of the iii worker's state:: functions.
+function mockWorker() {
   const db = new Map(); // scope -> Map(key -> value)
   const scoped = (s) => { if (!db.has(s)) db.set(s, new Map()); return db.get(s); };
   return {
@@ -19,7 +19,7 @@ function mockClient() {
 }
 
 test('wiki round-trip via iii-state, listed newest first', async () => {
-  store.setClient(mockClient());
+  store.setWorker(mockWorker());
   await store.saveWiki('w1', { id: 'w1', repo_name: 'a/b', updated_at: '2026-01-02' });
   await store.saveWiki('w2', { id: 'w2', repo_name: 'c/d', updated_at: '2026-01-03' });
   assert.equal((await store.getWiki('w1')).repo_name, 'a/b');
@@ -29,7 +29,7 @@ test('wiki round-trip via iii-state, listed newest first', async () => {
 });
 
 test('page save / get / list / delete', async () => {
-  store.setClient(mockClient());
+  store.setWorker(mockWorker());
   await store.savePage('w1', 'overview', '# Overview\n\nbody', { title: 'Overview', category: 'overview' });
   const p = await store.getPage('w1', 'overview');
   assert.equal(p.meta.title, 'Overview');
@@ -42,7 +42,7 @@ test('page save / get / list / delete', async () => {
 });
 
 test('status stamps updated_at; log appends and caps', async () => {
-  store.setClient(mockClient());
+  store.setWorker(mockWorker());
   await store.updateStatus('w1', { phase: 'ready', progress: 1 });
   const s = await store.getStatus('w1');
   assert.equal(s.phase, 'ready');
@@ -55,7 +55,7 @@ test('status stamps updated_at; log appends and caps', async () => {
 });
 
 test('pagesForPaths maps changed files to affected pages (source_paths + citations)', async () => {
-  store.setClient(mockClient());
+  store.setWorker(mockWorker());
   await store.savePage('w1', 'a', '# A', { slug: 'a', title: 'A', category: 'c', source_paths: ['src/a.ts'] });
   await store.savePage('w1', 'b', '# B', { slug: 'b', title: 'B', category: 'c', citations: [{ path: 'src/b.ts', start_line: 1 }] });
   await store.savePage('w1', 'c', '# C', { slug: 'c', title: 'C', category: 'c', source_paths: ['src/shared.ts'] });
@@ -68,12 +68,12 @@ test('pagesForPaths maps changed files to affected pages (source_paths + citatio
 });
 
 test('computeContentHash is order-independent and content-sensitive', async () => {
-  store.setClient(mockClient());
+  store.setWorker(mockWorker());
   await store.savePage('w1', 'a', 'A body', { slug: 'a', title: 'A', category: 'c' });
   await store.savePage('w1', 'b', 'B body', { slug: 'b', title: 'B', category: 'c' });
   const h1 = await store.computeContentHash('w1');
 
-  store.setClient(mockClient()); // fresh store, pages written in the other order
+  store.setWorker(mockWorker()); // fresh store, pages written in the other order
   await store.savePage('w1', 'b', 'B body', { slug: 'b', title: 'B', category: 'c' });
   await store.savePage('w1', 'a', 'A body', { slug: 'a', title: 'A', category: 'c' });
   assert.equal(await store.computeContentHash('w1'), h1);
@@ -83,7 +83,7 @@ test('computeContentHash is order-independent and content-sensitive', async () =
 });
 
 test('listPages reads the side-index, never enumerates page bodies', async () => {
-  const base = mockClient();
+  const base = mockWorker();
   let pageListCalls = 0;
   const spy = {
     async trigger(req) {
@@ -91,7 +91,7 @@ test('listPages reads the side-index, never enumerates page bodies', async () =>
       return base.trigger(req);
     },
   };
-  store.setClient(spy);
+  store.setWorker(spy);
   await store.savePage('w1', 'a', '# A body', { slug: 'a', title: 'A', category: 'c' });
   await store.savePage('w1', 'b', '# B body', { slug: 'b', title: 'B', category: 'c' });
   const pages = await store.listPages('w1');

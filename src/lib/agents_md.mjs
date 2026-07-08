@@ -21,7 +21,7 @@ export function buildAgentsBlock(meta, pages, baseUrl) {
   return lines.join('\n');
 }
 
-export async function exportAgentsMd(client, { id, targets, baseUrl }) {
+export async function exportAgentsMd(worker, { id, targets, baseUrl }) {
   const meta = await store.getWiki(id);
   if (!meta) throw notFound();
   const pages = (await store.listPages(id)).map((x) => ({ slug: x.slug, ...x.meta }));

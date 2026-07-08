@@ -43,9 +43,9 @@ function stripFences(s) {
   return (m ? m[1] : String(s || '')).trim();
 }
 
-async function llmMermaid(client, { meta, pages, kind, model }) {
+async function llmMermaid(worker, { meta, pages, kind, model }) {
   const pageList = pages.map((p) => `- ${p.title || p.slug} [${p.category || ''}]: ${(p.source_paths || []).slice(0, 4).join(', ')}`).join('\n');
-  const res = await client.trigger({
+  const res = await worker.trigger({
     function_id: 'router::complete',
     payload: {
       model,
@@ -59,13 +59,13 @@ async function llmMermaid(client, { meta, pages, kind, model }) {
   return stripFences(extractAssistantText(res?.message));
 }
 
-export async function makeDiagram(client, { id, kind = 'architecture', model }) {
+export async function makeDiagram(worker, { id, kind = 'architecture', model }) {
   const meta = await store.getWiki(id);
   if (!meta) throw notFound();
   const pages = (await store.listPages(id)).map((x) => ({ slug: x.slug, ...x.meta }));
 
   let mermaid = null;
-  try { mermaid = await llmMermaid(client, { meta, pages, kind, model: model || meta.model }); }
+  try { mermaid = await llmMermaid(worker, { meta, pages, kind, model: model || meta.model }); }
   catch { mermaid = null; }
   if (!mermaid || !VALID.test(mermaid)) mermaid = heuristicMermaid(meta, pages);
 
