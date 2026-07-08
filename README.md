@@ -24,32 +24,40 @@ of embedding their logic, and degrades gracefully when a worker is absent.
 3. heuristic — no LLM; builds a serviceable page from file headers. Always works.
 
 Git runs through `shell` (`shell::exec`) when present, otherwise a local `git`
-fallback. Persistence is iii-state (engine builtin). The UI + JSON API need an
-`http` provider; the nightly refresh needs `iii-cron`.
+fallback. Persistence is iii-state (engine builtin). The engine serves the UI +
+JSON API over its built-in `http` triggers; the nightly refresh uses `iii-cron`
+(pulled in with `harness`).
 
-### Worker matrix
+### Workers
 
-| Want | Add |
+One command installs everything openwiki composes:
+
+```
+iii worker add harness console
+```
+
+`harness` pulls its whole stack transitively — `llm-router`, `session-manager`,
+`context-manager`, `shell`, the model providers, `iii-state`, `iii-cron`, and
+`web` — so you never list them yourself. `console` adds the trace + chat UI for
+watching generation live. The engine serves openwiki's browser UI and JSON API
+directly (the `http` trigger type is built in — no separate http worker).
+
+openwiki degrades gracefully when a worker is absent:
+
+| Present | Pages are |
 |---|---|
-| Generate + browse via CLI triggers (heuristic) | nothing beyond the engine |
-| LLM-written pages | `llm-router` + a configured provider |
-| Agentic, line-cited pages | `harness` + `session-manager` + `context-manager` (+ a provider) |
-| Browser UI at `/openwiki` | `iii-http` |
-| Jailed git (clone dir must sit inside shell's `fs.host_roots`) | `shell` |
-| Nightly incremental refresh | `iii-cron` |
+| `harness` + a configured provider | agent-explored, line-cited (best) |
+| `llm-router` only | model-written from pre-selected files |
+| neither | heuristic — built from file headers, always works |
 
-```
-iii worker add llm-router harness session-manager context-manager iii-http iii-cron shell
-```
-
-The router owns the credential — configure a provider (anthropic, openai, xai,
-or an OAuth CLI provider) in the llm-router config; openwiki never holds a key.
-The default model is `claude-sonnet-4-6`; override per call (`{"model":"..."}`)
-or with `OPENWIKI_MODEL`. openwiki resolves the model against
+The provider credential lives in the `llm-router` / provider config, never in
+openwiki. The default model is `claude-sonnet-4-6`; override per call
+(`{"model":"..."}`) or with `OPENWIKI_MODEL`. openwiki resolves the model against
 `router::models::list` and prefers a structured-output-capable model for the
 harness path.
 
-`git` must be on PATH for the local fallback.
+Git (clone / diff) runs through `shell` (jailed to `fs.host_roots`); if the shell
+worker is absent, openwiki falls back to a local `git` on PATH.
 
 ## Local setup
 
@@ -59,18 +67,22 @@ cd openwiki
 npm install
 ```
 
-Start the engine in one terminal (`config.collect.yaml` lists the workers
-openwiki composes — `shell`, `iii-state`, `iii-http`, `iii-cron`, `llm-router`
-plus a provider), then run the worker in another:
+Start the engine in one terminal:
 
 ```
-iii -c config.collect.yaml
+iii                              # runs the engine; serves HTTP on :3111
+```
+
+In another, install the workers openwiki composes and run it:
+
+```
+iii worker add harness console   # pulls the whole stack + the trace UI
 III_URL=ws://127.0.0.1:49134 node src/index.mjs
 ```
 
-Git (clone / diff) runs through the `shell` worker when present, so the clone
-directory (`OPENWIKI_DATA`) must resolve inside shell's `fs.host_roots`. Without
-the shell worker, openwiki falls back to local `git`.
+Git (clone / diff) runs through the `shell` worker (installed with `harness`), so
+the clone directory (`OPENWIKI_DATA`) must resolve inside shell's `fs.host_roots`.
+Without the shell worker, openwiki falls back to a local `git` on PATH.
 
 Environment:
 
@@ -150,14 +162,19 @@ etc.) so any MCP client can browse and query a wiki.
 
 HTTP triggers mirror the read/generate functions under `/openwiki/api/*`, and
 `/openwiki` serves the UI — page citations deep-link to source at the pinned
-commit, plus **Ask** and **Diagram** panels.
+commit, diagrams render inline in the page, generation progress streams live
+(SSE), and an **Ask** panel answers cited questions.
 
 ## How generation works
 
 1. Clone the repo (via the `shell` worker) and inventory its files.
-2. One model call plans a categorized outline of 6 to 12 pages.
-3. Page writers run in parallel; each reads the relevant source files and writes
-   markdown with `[[wiki-links]]` and `path:line` citations.
+2. The harness explores the clone and plans a categorized, nested outline. The
+   page budget scales with repo size (roughly 3-6 pages for a tiny repo up to
+   ~48 for a large or doc-heavy one) and follows the repo's own docs index
+   (`llms.txt` / a `docs/` tree) when present.
+3. Page writers run as named child sessions in parallel; each reads the relevant
+   source files and writes markdown with `[[wiki-links]]` and `path:line`
+   citations. Progress streams to the UI as each page lands.
 4. Pages are stored in iii-state behind a lightweight page index (so large wikis
    never enumerate page bodies), and the last commit + a page-set content hash
    are recorded.
