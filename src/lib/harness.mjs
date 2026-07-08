@@ -201,40 +201,6 @@ export async function generatePageViaHarness(worker, opts) {
   return best;
 }
 
-// Spawn one page-writer as a native harness sub-agent (fire-and-forget). The
-// page arrives later on harness::turn-completed (routed via turnbus), never here.
-// harness::spawn (not send) is REQUIRED: only spawn stamps
-// display_parent_session_id, which the turn-completed event carries so openwiki
-// can collect every page via a single {parent_session_id: root} subscription
-// (a plain send emits parent_session_id: null — harness send.rs). The child
-// reads source itself via openwiki::src::*; openwiki pre-reads nothing.
-export async function spawnPageChild(worker, opts) {
-  const {
-    wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles,
-    model, provider, rootSessionId, feedback = '', previousMarkdown = '', maxTurns = 12,
-  } = opts;
-  const childSessionId = rootSessionId + '/' + outlineItem.slug;
-  const message = buildUserPrompt({ wikiId, outlineItem, repoName, repoUrl, categories, allSlugs, allTitles, feedback, previousMarkdown });
-  const r = await worker.trigger({
-    function_id: 'harness::spawn',
-    payload: {
-      task: message,
-      ...(model ? { model } : {}),
-      ...(provider ? { provider } : {}),
-      session_id: childSessionId,
-      parent_session_id: rootSessionId,
-      options: {
-        system_prompt: PAGE_SYSTEM,
-        output: { type: 'json', schema: PAGE_HARNESS_OUT },
-        functions: { allow: ['openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
-        max_turns: maxTurns,
-      },
-    },
-    timeoutMs: 30_000,
-  });
-  return r?.child_session_id || childSessionId;
-}
-
 // Native orchestrator: ONE agent session does the whole job the harness way.
 // The system prompt makes spawning part of the task, so the agent calls
 // harness::spawn itself (in-turn) — that is how the harness loop delegates, not
@@ -312,50 +278,6 @@ export async function runOrchestrator(worker, { wikiId, repoName, repoUrl, model
   const result = await awaitTurn(worker, session_id, { timeoutMs });
   if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('orchestrator returned no pages');
   return { summary: result.summary || '', navigation: Array.isArray(result.navigation) ? result.navigation : [], pages: result.pages, sessionId: session_id };
-}
-
-// Child page schema the parent embeds in each spawn's output contract. Kept
-// small so the model can reproduce it reliably in N spawn calls.
-const CHILD_PAGE_SCHEMA = {
-  type: 'object',
-  properties: {
-    title: { type: 'string' },
-    markdown: { type: 'string' },
-    citations: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, start_line: { type: 'integer' }, end_line: { type: 'integer' } } } },
-  },
-  required: ['title', 'markdown'],
-};
-
-// Agent-driven fan-out: send a directive INTO the plan session so the PARENT
-// agent emits the harness::spawn calls itself (they show up in the parent's
-// transcript and drive a real park/join), instead of openwiki spawning behind
-// its back. The children still emit turn-completed{parent_session_id: root},
-// so openwiki collects them exactly as before (turnbus). The parent's policy
-// must allow BOTH harness::spawn (to spawn) AND openwiki::src::* (children
-// subset the parent's policy — Agent gotcha), else page-writers can read nothing.
-export async function sendSpawnDirective(worker, { rootSessionId, wikiId, outline, model, provider, childMaxTurns = 12 }) {
-  // Lightweight: name the pages, let the model spawn naturally. The harness's
-  // own system prompt already teaches harness::spawn; we do not embed schemas or
-  // rigid templates (that bloats the turn and the agent chokes reproducing it).
-  const rows = outline.map((p) => `- ${p.slug} — ${p.title}`).join('\n');
-  const message =
-    'Now write the wiki you just planned. For EACH page below, spawn one page-writer sub-agent with harness::spawn — put all the spawns in THIS message so they run in parallel. Do not write any page yourself.\n\n' +
-    `Each sub-agent: tell it to write that one page, reading source with openwiki::src::read / openwiki::src::list / openwiki::src::grep (id="${wikiId}"), with a "Relevant Source Files" section and path:line citations. Give each spawn session_id="${rootSessionId}/<slug>", allow it only the openwiki::src::* functions, and set its output contract to {"type":"json","schema":{"type":"object","properties":{"markdown":{"type":"string"}},"required":["markdown"]}} so it returns the page as {markdown}.\n\n` +
-    'Pages:\n' + rows + '\n\nWhen every sub-agent has finished, reply: done.';
-  await worker.trigger({
-    function_id: 'harness::send',
-    payload: {
-      session_id: rootSessionId,
-      message,
-      ...(model ? { model } : {}),
-      ...(provider ? { provider } : {}),
-      options: {
-        functions: { allow: ['harness::spawn', 'openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
-        max_turns: 8,
-      },
-    },
-    timeoutMs: 30_000,
-  });
 }
 
 const PLAN_SYSTEM =
