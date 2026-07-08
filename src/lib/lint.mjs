@@ -34,10 +34,12 @@ export async function lintWiki(wikiId) {
           issues.push({ slug, kind: 'broken-citation', detail: `missing file ${c.path}` });
           continue;
         }
-        if (c.start_line) {
+        if (c.start_line || c.end_line) {
           const total = content.split(/\r?\n/).length;
-          if (c.start_line > total) {
+          if (c.start_line && c.start_line > total) {
             issues.push({ slug, kind: 'broken-citation', detail: `${c.path}:${c.start_line} beyond ${total} lines` });
+          } else if (c.end_line && c.end_line > total) {
+            issues.push({ slug, kind: 'broken-citation', detail: `${c.path}:${c.end_line} beyond ${total} lines` });
           }
         }
       }

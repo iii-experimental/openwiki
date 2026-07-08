@@ -768,7 +768,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
       if (!c || !c.path) continue;
       const range = c.start_line ? (':' + c.start_line + (c.end_line && c.end_line !== c.start_line ? '-' + c.end_line : '')) : '';
       const label = c.path + range;
-      if (c.url) box.appendChild(el('a', { href: c.url, target:'_blank', rel:'noopener noreferrer', text: label }));
+      if (c.url && /^https?:\/\//i.test(c.url)) box.appendChild(el('a', { href: c.url, target:'_blank', rel:'noopener noreferrer', text: label }));
       else box.appendChild(el('span', { class:'nolink', text: label }));
     }
     return box;

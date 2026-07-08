@@ -72,6 +72,17 @@ async function getIndex(wikiId) {
 }
 async function setIndex(wikiId, idx) { await sset(S_PAGE_INDEX, wikiId, idx); }
 
+// Serialize the page-index read-modify-write per wiki. Pages generate
+// concurrently (batch writers, spawned sub-agents), so an unguarded
+// getIndex -> mutate -> setIndex would lose updates.
+const indexLocks = new Map();
+function withIndexLock(wikiId, fn) {
+  const prev = indexLocks.get(wikiId) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  indexLocks.set(wikiId, run.catch(() => {}));
+  return run;
+}
+
 // Rebuild the index from the pages scope. Migration / self-heal path only —
 // runs once when a wiki has pages but no index (pre-index wikis).
 async function rebuildIndex(wikiId) {
@@ -85,11 +96,13 @@ async function rebuildIndex(wikiId) {
 
 export async function savePage(wikiId, slug, markdown, meta) {
   await sset(pagesScope(wikiId), slug, { slug, markdown, meta });
-  const idx = await getIndex(wikiId);
-  const entry = { slug, meta, hash: sha256(markdown || '') };
-  const i = idx.findIndex((e) => e.slug === slug);
-  if (i >= 0) idx[i] = entry; else idx.push(entry);
-  await setIndex(wikiId, idx);
+  await withIndexLock(wikiId, async () => {
+    const idx = await getIndex(wikiId);
+    const entry = { slug, meta, hash: sha256(markdown || '') };
+    const i = idx.findIndex((e) => e.slug === slug);
+    if (i >= 0) idx[i] = entry; else idx.push(entry);
+    await setIndex(wikiId, idx);
+  });
 }
 
 export async function getPage(wikiId, slug) {
@@ -109,9 +122,11 @@ export async function listPages(wikiId) {
 
 export async function deletePage(wikiId, slug) {
   await sdel(pagesScope(wikiId), slug);
-  const idx = await getIndex(wikiId);
-  const next = idx.filter((e) => e.slug !== slug);
-  if (next.length !== idx.length) await setIndex(wikiId, next);
+  await withIndexLock(wikiId, async () => {
+    const idx = await getIndex(wikiId);
+    const next = idx.filter((e) => e.slug !== slug);
+    if (next.length !== idx.length) await setIndex(wikiId, next);
+  });
 }
 
 // Slugs whose source_paths or citations touch any of `changedPaths`. Drives

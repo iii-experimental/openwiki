@@ -145,6 +145,7 @@ export async function generatePageViaHarness(client, opts) {
     });
     sessionId = r?.session_id;
   }
+  if (!sessionId) throw new Error('harness::send returned no session_id');
   const result = await awaitTurn(client, sessionId, { timeoutMs });
   return mapResult(result, { outlineItem, repoUrl, commit });
 }

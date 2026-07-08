@@ -62,10 +62,11 @@ async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, 
   const allTitles = fullOutline.map((o) => o.title);
   const total = itemsToWrite.length || 1;
   const resolved = await resolveModel(client, model);
+  const step = Math.max(1, Number(cfg.max_parallel) || 1);
   let done = 0;
 
-  for (let i = 0; i < itemsToWrite.length; i += cfg.max_parallel) {
-    const batch = itemsToWrite.slice(i, i + cfg.max_parallel);
+  for (let i = 0; i < itemsToWrite.length; i += step) {
+    const batch = itemsToWrite.slice(i, i + step);
     await Promise.all(batch.map(async (item) => {
       const reads = [];
       for (const p of item.source_paths || []) {

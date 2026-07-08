@@ -43,13 +43,16 @@ async function sh(client, command, args, { cwd, timeoutMs } = {}) {
         timeoutMs: (timeoutMs || 120_000) + 10_000,
       });
     } catch {
-      res = null; // shell worker unavailable -> local fallback
+      res = null; // shell worker unreachable -> local fallback
     }
-    if (res && typeof res.exit_code === 'number') {
-      if (res.exit_code === 0) return { stdout: res.stdout || '', stderr: res.stderr || '' };
-      throw new Error(
-        `${command} ${args.join(' ')} exited ${res.exit_code}: ${String(res.stderr || '').trim()}`,
-      );
+    if (res != null) {
+      // Reached the worker. Never fall back from here: a fallback could
+      // double-run side effects (a second clone). Surface the outcome.
+      if (typeof res.exit_code === 'number') {
+        if (res.exit_code === 0) return { stdout: res.stdout || '', stderr: res.stderr || '' };
+        throw new Error(`${command} ${args.join(' ')} exited ${res.exit_code}: ${String(res.stderr || '').trim()}`);
+      }
+      throw new Error(`${command} ${args.join(' ')}: shell::exec returned no exit_code`);
     }
   }
   return runLocal(command, args, { cwd });

@@ -36,7 +36,7 @@ export function heuristicMermaid(meta, pages) {
   return lines.join('\n');
 }
 
-const VALID = /^\s*(flowchart|graph|sequenceDiagram|classDiagram|erDiagram|stateDiagram)/m;
+const VALID = /^\s*(flowchart|graph|sequenceDiagram|classDiagram|erDiagram|stateDiagram)/;
 
 function stripFences(s) {
   const m = String(s || '').match(/```(?:mermaid)?\s*\n?([\s\S]*?)\n?```/i);

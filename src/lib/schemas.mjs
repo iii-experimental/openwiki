@@ -398,6 +398,7 @@ export const SRC_LIST_RES = {
         properties: { path: STRING, language: STRING, size: INT, priority: INT },
       },
     },
+    truncated: BOOL,
   },
 };
 export const SRC_GREP_REQ = {

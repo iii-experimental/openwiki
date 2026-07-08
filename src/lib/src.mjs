@@ -3,6 +3,7 @@
 // agent_trigger to explore the repo and cite exact line ranges. Single-reader
 // surface — the orchestrator remains the single writer.
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { repoDir } from './store.mjs';
 import { inventoryRepo, readSourceFile } from './inventory.mjs';
 import { lineWindow } from './harness.mjs';
@@ -33,21 +34,34 @@ function account(wikiId, field, n) {
 export function getReadStats(wikiId) { return readStats.get(wikiId) || null; }
 export function resetReadStats(wikiId) { readStats.delete(wikiId); }
 
-// Reject any path that escapes the wiki's clone directory.
-function guard(root, rel) {
-  const abs = path.resolve(root, rel);
+function escape() {
+  const e = new Error('path escapes repository');
+  e.code = 'openwiki/path_escape';
+  return e;
+}
+function contained(base, abs) {
+  return abs === base || abs.startsWith(base + path.sep);
+}
+
+// Reject any path that escapes the wiki's clone directory, lexically AND after
+// resolving symlinks (a symlink inside a clone can point outside it).
+async function guard(root, rel) {
   const base = path.resolve(root);
-  if (abs !== base && !abs.startsWith(base + path.sep)) {
-    const e = new Error('path escapes repository');
-    e.code = 'openwiki/path_escape';
-    throw e;
+  const abs = path.resolve(base, rel);
+  if (!contained(base, abs)) throw escape();
+  try {
+    const [realBase, realAbs] = await Promise.all([fs.realpath(base), fs.realpath(abs)]);
+    if (!contained(realBase, realAbs)) throw escape();
+  } catch (e) {
+    if (e.code === 'openwiki/path_escape') throw e;
+    // ENOENT: the file does not exist; readSourceFile will surface that.
   }
   return abs;
 }
 
 export async function srcRead(wikiId, rel, from, to) {
   const dir = repoDir(wikiId);
-  guard(dir, rel);
+  await guard(dir, rel);
   const { content, truncated } = await readSourceFile(dir, rel, 200_000);
   const w = lineWindow(content, from, to);
   account(wikiId, 'read_calls', 1);
@@ -62,10 +76,11 @@ export async function srcList(wikiId, subdir) {
     const pfx = String(subdir).replace(/\/+$/, '') + '/';
     files = inv.filter((e) => e.relPath.startsWith(pfx));
   }
+  const truncated = files.length > 500;
   const out = files.slice(0, 500).map((e) => ({ path: e.relPath, language: e.language, size: e.size, priority: e.priority }));
   account(wikiId, 'list_calls', 1);
   account(wikiId, 'list_bytes', out.reduce((n, f) => n + f.path.length + 20, 0));
-  return { files: out };
+  return { files: out, truncated };
 }
 
 export async function srcGrep(wikiId, pattern, max = 200) {
