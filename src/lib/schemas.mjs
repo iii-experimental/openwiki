@@ -195,6 +195,29 @@ export const PAGE_REQ = {
   required: ['id', 'slug'],
   properties: { id: STRING, slug: STRING },
 };
+
+// A page-writer sub-agent stores its finished page directly, so the parent never
+// carries the markdown. Agent-exposed but guarded to a generating wiki.
+export const WRITE_PAGE_REQ = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['id', 'slug', 'markdown'],
+  properties: {
+    id: STRING, slug: STRING, title: STRING, category: STRING, markdown: STRING,
+    source_paths: { type: 'array', items: STRING },
+    citations: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false, required: ['path'],
+        properties: { path: STRING, start_line: INT, end_line: INT, note: STRING },
+      },
+    },
+  },
+};
+export const WRITE_PAGE_RES = {
+  type: 'object', additionalProperties: false, required: ['slug', 'ok'],
+  properties: { slug: STRING, ok: { type: 'boolean' } },
+};
 export const PAGE_RES = {
   type: 'object',
   additionalProperties: false,

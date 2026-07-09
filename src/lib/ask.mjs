@@ -88,11 +88,34 @@ async function askFastLLM(worker, { q, blocks, model }) {
   return text;
 }
 
-async function askDeep(worker, { id, q, model }) {
+// Seed the agent with the pages we already retrieved so it can answer even if it
+// never makes a tool call, and spell out the EXACT function signatures — agents
+// otherwise guess wiki_id/query/path and every call fails.
+function deepAskMessage(id, q, blocks) {
+  const context = (blocks || [])
+    .filter((b) => b && b.excerpt)
+    .map((b) => `## ${b.title || b.slug} (slug: ${b.slug})\n${b.excerpt}`)
+    .join('\n\n');
+  return (
+    `Question: ${q}\n\n` +
+    `Wiki id: ${id}\n\n` +
+    `Relevant wiki pages already retrieved for you:\n${context || '(none matched — use the functions below)'}\n\n` +
+    `Answer in Markdown, grounded in these pages, citing exact source file paths. ` +
+    `To dig deeper, call the read functions and ALWAYS pass the wiki id as "id":\n` +
+    `- openwiki::pages { id }\n` +
+    `- openwiki::page { id, slug }   (slug from openwiki::pages)\n` +
+    `- openwiki::search { id, q }\n` +
+    `- openwiki::src::list { id, dir }\n` +
+    `- openwiki::src::read { id, path }\n` +
+    `- openwiki::src::grep { id, pattern }`
+  );
+}
+
+async function askDeep(worker, { id, q, model, blocks }) {
   const { session_id } = await worker.trigger({
     function_id: 'harness::send',
     payload: {
-      message: `Answer this question about the repository, citing exact files: ${q}\nUse id="${id}" for the openwiki::* read functions.`,
+      message: deepAskMessage(id, q, blocks),
       model,
       options: {
         system_prompt: ASK_SYSTEM,
@@ -137,13 +160,13 @@ export async function askWiki(worker, { id, q, mode = 'fast', file_answer = fals
   let answer = null;
   try {
     answer = mode === 'deep'
-      ? await askDeep(worker, { id, q, model: model || meta.model })
+      ? await askDeep(worker, { id, q, model: model || meta.model, blocks })
       : await askFastLLM(worker, { q, blocks, model: model || meta.model });
   } catch { answer = null; }
   // Fast mode uses router::complete; if that path is down, try the harness
   // (streaming) before dropping to the heuristic stitch.
   if (!answer && mode !== 'deep') {
-    try { answer = await askDeep(worker, { id, q, model: model || meta.model }); } catch { answer = null; }
+    try { answer = await askDeep(worker, { id, q, model: model || meta.model, blocks }); } catch { answer = null; }
   }
   if (!answer) answer = heuristicAnswer(q, blocks);
 

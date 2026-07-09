@@ -878,16 +878,28 @@ export const INDEX_HTML = String.raw`<!doctype html>
       renderMainProgress(state.generating.get(id) || { phase: 'generating', progress: 0 });
       return;
     }
-    // pick a page
+    // pick a page: honor an explicit slug, else land on the reading-flow start
+    // (the first leaf of the ordered nav = Getting Started), NOT pages[0] which is
+    // write order and can be API Reference.
     let target = slugHint;
     if (!target || !state.pages.find((p) => p.slug === target)) {
+      const firstNav = firstNavSlug(state.currentWiki && state.currentWiki.navigation);
       const prefer = state.pages.find((p) => p.slug === 'overview')
         || state.pages.find((p) => p.slug === 'readme')
+        || (firstNav && state.pages.find((p) => p.slug === firstNav))
         || state.pages[0];
       target = prefer && prefer.slug;
     }
     if (target) selectPage(target);
     else renderMain(null);
+  }
+
+  function firstNavSlug(nav) {
+    for (const n of nav || []) {
+      if (n.slug) return n.slug;
+      if (n.children) { const s = firstNavSlug(n.children); if (s) return s; }
+    }
+    return null;
   }
 
   function groupPages() {
