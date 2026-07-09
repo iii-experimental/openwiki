@@ -1,5 +1,10 @@
 # openwiki
 
+<p align="center">
+  <img src="assets/openwiki-light.png" alt="OpenWiki browser UI, light theme" width="49%">
+  <img src="assets/openwiki-dark.png" alt="OpenWiki browser UI, dark theme" width="49%">
+</p>
+
 An iii worker that builds and maintains a source-grounded, interlinked markdown
 wiki for a code repository, and serves a browser UI to read and search it.
 
