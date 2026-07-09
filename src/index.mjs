@@ -12,8 +12,10 @@ import { inventoryRepo, readSourceFile } from './lib/inventory.mjs';
 import * as store from './lib/store.mjs';
 import { searchPages } from './lib/search.mjs';
 import { planWiki } from './lib/generate.mjs';
-import { generatePageAny, planViaHarness } from './lib/harness.mjs';
+import { generatePageAny, planViaHarness, runOrchestrator, mapResult, wikiParentSession } from './lib/harness.mjs';
+import { slugify } from './lib/ask.mjs';
 import { resolveModel, listModels } from './lib/model.mjs';
+import * as turnbus from './lib/turnbus.mjs';
 import { srcRead, srcList, srcGrep, invalidateInventory, getReadStats, resetReadStats } from './lib/src.mjs';
 import { lintWiki } from './lib/lint.mjs';
 import { askWiki } from './lib/ask.mjs';
@@ -74,10 +76,17 @@ function inferRepoName(url) {
 // incremental refresh; `fullOutline` supplies sibling links for cross-refs so a
 // partial refresh still links to the whole wiki.
 async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, repoName, repoUrl, model, commit, parentSessionId, progressBase = 0.3, progressSpan = 0.65 }) {
+  // The native agentic path is runOrchestrator (see runGeneration). This runs
+  // only as the fallback for the router / heuristic tiers, synchronously in
+  // bounded parallel.
+  const resolved = await resolveModel(worker, model);
+  return writePagesSync(wikiId, { dir, itemsToWrite, fullOutline, categories, repoName, repoUrl, model, commit, parentSessionId, resolved, progressBase, progressSpan });
+}
+
+async function writePagesSync(wikiId, { dir, itemsToWrite, fullOutline, categories, repoName, repoUrl, model, commit, parentSessionId, resolved, progressBase = 0.3, progressSpan = 0.65 }) {
   const allSlugs = fullOutline.map((o) => o.slug);
   const allTitles = fullOutline.map((o) => o.title);
   const total = itemsToWrite.length || 1;
-  const resolved = await resolveModel(worker, model);
   const step = Math.max(1, Number(cfg.max_parallel) || 1);
   let done = 0;
 
@@ -86,11 +95,8 @@ async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, 
     await Promise.all(batch.map(async (item) => {
       const reads = [];
       for (const p of item.source_paths || []) {
-        try {
-          reads.push(await readSourceFile(dir, p, 40_000));
-        } catch (e) {
-          reads.push({ path: p, content: `(unreadable: ${e.message})`, truncated: false });
-        }
+        try { reads.push(await readSourceFile(dir, p, 40_000)); }
+        catch (e) { reads.push({ path: p, content: `(unreadable: ${e.message})`, truncated: false }); }
       }
       try {
         const { markdown, frontmatter } = await generatePageAny(worker, {
@@ -145,39 +151,78 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
       const docsIndex = await fetchDocsIndex(worker, { repoUrl, readme, repoDir: dir });
       if (docsIndex) { dHint = buildDocsHint(docsIndex); await store.appendLog(wikiId, `docs oracle: ${docsIndex.linkCount} topics (${docsIndex.source})`); }
     } catch { /* oracle is optional */ }
-    let planned = null;
+    // Native path: ONE orchestrator agent explores, decides the pages, and
+    // writes each by spawning a page-writer sub-agent (harness::spawn) itself —
+    // the harness way. The harness parks the parent, runs the children, delivers
+    // results back, and the parent submits the assembled wiki; we just store it.
+    let pages = null; let navigation = []; let summary = ''; let categories = [];
+    // Live progress: the orchestrator returns everything only at the end, so
+    // stream per-page updates off the page-writer children's turn-completed
+    // events as they finish (restores the live UI the send-per-page path had).
+    const orchRoot = wikiParentSession(name, wikiId);
+    let liveDone = 0;
+    const offLive = turnbus.register(orchRoot, {
+      onSpawn: (childId) => {
+        pushProgress(wikiId, { kind: 'spawn', slug: String(childId).split('/').pop() || 'page' });
+      },
+      onPage: (childId) => {
+        liveDone += 1;
+        const slug = String(childId).split('/').pop() || 'page';
+        pushProgress(wikiId, { kind: 'page', slug, title: slug });
+        setStatus(wikiId, { phase: 'generating', progress: Math.min(0.92, 0.35 + liveDone * 0.08), message: `Sub-agents wrote ${liveDone} page(s)`, pages_done: liveDone, updated_at: now() }).catch(() => {});
+      },
+    });
     try {
-      planned = await planViaHarness(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
+      await setStatus(wikiId, { phase: 'generating', progress: 0.3, message: 'Agent exploring and spawning page-writers', updated_at: now() });
+      const orch = await runOrchestrator(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
+      pages = orch.pages; navigation = orch.navigation; summary = orch.summary;
+      categories = navigation.map((l1) => ({ id: l1.title, title: l1.title }));
+      await store.appendLog(wikiId, `Orchestrator returned ${pages.length} pages.`);
     } catch (e) {
-      await store.appendLog(wikiId, `harness plan fallback (${e?.message || e})`);
+      await store.appendLog(wikiId, `orchestrator fallback (${e?.message || e})`);
+    } finally { offLive(); }
+
+    if (pages) {
+      const invPaths = inventory.map((e) => e.relPath);
+      const total = pages.length || 1; let done = 0;
+      for (const p of pages) {
+        const slug = String(p.slug || '').trim() || slugify(p.title || 'page');
+        // The sub-agents return only markdown; recover the page's source files by
+        // matching real inventory paths that appear in it (Relevant Source Files
+        // section, Sources: lines, inline refs) so the right rail is populated.
+        const md = String(p.markdown || '');
+        const source_paths = invPaths.filter((ip) => md.includes(ip)).slice(0, 20);
+        const { markdown, frontmatter } = mapResult(
+          { title: p.title, markdown: md, citations: p.citations, status: 'current' },
+          { outlineItem: { slug, title: p.title, category: p.category, source_paths }, repoUrl, commit },
+        );
+        await store.savePage(wikiId, slug, markdown, frontmatter);
+        done += 1;
+        pushProgress(wikiId, { kind: 'page', slug, title: p.title || slug });
+        await setStatus(wikiId, { phase: 'generating', progress: 0.3 + 0.65 * (done / total), message: `Stored ${done}/${total} pages`, pages_done: done, pages_total: total, updated_at: now() });
+      }
+      await store.saveOutline(wikiId, { navigation, categories, items: pages.map((p) => ({ slug: p.slug, title: p.title, category: p.category, source_paths: [] })) });
+    } else {
+      // Fallback: two-phase plan + parallel writers (no harness model, or the
+      // orchestrator failed). Keeps openwiki working without the agentic path.
+      let planned = null;
+      try { planned = await planViaHarness(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint }); }
+      catch (e) { await store.appendLog(wikiId, `harness plan fallback (${e?.message || e})`); }
+      if (!planned) planned = await planWiki(worker, { inventory, repoName: name, repoUrl, model, repoDir: dir, steer });
+      const parentSessionId = planned && planned.sessionId;
+      const norm = normalizePlan(planned);
+      summary = norm.summary; navigation = norm.navigation;
+      const invPaths = new Set(inventory.map((e) => e.relPath));
+      const outline = norm.outline.map((item) => ({ ...item, source_paths: (item.source_paths || []).filter((p) => invPaths.has(p)) }));
+      categories = navigation.map((l1) => ({ id: l1.title, title: l1.title }));
+      await store.saveOutline(wikiId, { navigation, categories, items: outline });
+      await store.saveWiki(wikiId, { id: wikiId, repo_url: repoUrl, repo_name: name, ref: ref || '', commit, created_at: started, updated_at: now(), page_count: outline.length, category_count: categories.length, categories, navigation, summary, model, steer: steer || undefined, generating: true });
+      await writePages(wikiId, { dir, itemsToWrite: outline, fullOutline: outline, categories, repoName: name, repoUrl, model, commit, parentSessionId });
+      pages = outline;
     }
-    if (!planned) planned = await planWiki(worker, { inventory, repoName: name, repoUrl, model, repoDir: dir, steer });
-    const parentSessionId = planned && planned.sessionId;
-    const norm = normalizePlan(planned);
-    const summary = norm.summary;
-    const navigation = norm.navigation;
-    // Validate cited paths against the real inventory.
-    const invPaths = new Set(inventory.map((e) => e.relPath));
-    const outline = norm.outline.map((item) => ({
-      ...item,
-      source_paths: (item.source_paths || []).filter((p) => invPaths.has(p)),
-    }));
-    const categories = navigation.map((l1) => ({ id: l1.title, title: l1.title }));
-    await store.saveOutline(wikiId, { navigation, categories, items: outline });
-
-    const meta0 = {
-      id: wikiId, repo_url: repoUrl, repo_name: name, ref: ref || '', commit,
-      created_at: started, updated_at: now(),
-      page_count: outline.length, category_count: categories.length,
-      categories, navigation, summary, model, steer: steer || undefined, generating: true,
-    };
-    await store.saveWiki(wikiId, meta0);
-    await store.appendLog(wikiId, `Planned ${outline.length} pages across ${categories.length} categories.`);
-
-    await writePages(wikiId, { dir, itemsToWrite: outline, fullOutline: outline, categories, repoName: name, repoUrl, model, commit, parentSessionId });
 
     const content_hash = await store.computeContentHash(wikiId);
-    await store.saveWiki(wikiId, { ...meta0, updated_at: now(), content_hash, generating: false });
+    await store.saveWiki(wikiId, { id: wikiId, repo_url: repoUrl, repo_name: name, ref: ref || '', commit, created_at: started, updated_at: now(), page_count: pages.length, category_count: categories.length, categories, navigation, summary, model, steer: steer || undefined, generating: false, content_hash });
     await setStatus(wikiId, { phase: 'ready', progress: 1, message: 'Wiki ready', updated_at: now() });
     await store.appendLog(wikiId, 'Wiki ready.');
     try {
@@ -623,6 +668,27 @@ try {
 } catch (e) {
   console.warn('[openwiki] failed to bind cron', e?.message || e);
 }
+
+// Real-time page collection: subscribe to the harness's emitted turn-completed
+// events and route each to the active generation (turnbus). One broad binding
+// (no session filter) sees every turn; unowned roots are a cheap map miss. This
+// drives the orchestrator's live per-page progress instead of polling.
+worker.registerFunction('openwiki::on-turn-completed', async (evt) => {
+  try { turnbus.deliver(evt?.payload || evt); } catch (e) { console.warn('[openwiki] turn-event route failed', e?.message || e); }
+  return null;
+}, { description: 'Internal: routes harness::turn-completed events to the active generation.', request_format: { type: 'object', additionalProperties: true, properties: {} }, response_format: { type: 'null' } });
+
+// turn-started drives the "spawned page-writer" line in the live feed.
+worker.registerFunction('openwiki::on-turn-started', async (evt) => {
+  try { turnbus.deliverStarted(evt?.payload || evt); } catch (e) { console.warn('[openwiki] turn-started route failed', e?.message || e); }
+  return null;
+}, { description: 'Internal: routes harness::turn-started events (sub-agent spawns) to the active generation.', request_format: { type: 'object', additionalProperties: true, properties: {} }, response_format: { type: 'null' } });
+
+Promise.resolve()
+  .then(() => worker.registerTrigger({ type: 'harness::turn-completed', function_id: 'openwiki::on-turn-completed', config: {} }))
+  .then(() => worker.registerTrigger({ type: 'harness::turn-started', function_id: 'openwiki::on-turn-started', config: {} }))
+  .then(() => { console.log('[openwiki] subscribed to harness turn events (real-time collection + spawn feed)'); })
+  .catch((e) => console.warn('[openwiki] turn-event subscribe failed; using synchronous fallback:', e?.message || e));
 
 // Configuration: register the schema, load the stored value, and hot-reload on
 // change. Runs off the boot path so it never delays function registration.

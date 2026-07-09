@@ -201,6 +201,85 @@ export async function generatePageViaHarness(worker, opts) {
   return best;
 }
 
+// Native orchestrator: ONE agent session does the whole job the harness way.
+// The system prompt makes spawning part of the task, so the agent calls
+// harness::spawn itself (in-turn) — that is how the harness loop delegates, not
+// an injected "now spawn" directive. The harness parks the parent, runs the
+// page-writer children in parallel, delivers each result back to the parent, and
+// the parent assembles + submits the wiki. openwiki just reads the final result.
+const ORCHESTRATOR_SYSTEM =
+  'You are OpenWiki. Turn a code repository into a source-grounded wiki by DELEGATING each page to a sub-agent.\n\n' +
+  'You have these functions:\n' +
+  '- openwiki::src::list { id, dir? } — the file tree.\n' +
+  '- openwiki::src::read { id, path, from?, to? } — read a file.\n' +
+  '- openwiki::src::grep { id, pattern } — search contents.\n' +
+  '- harness::spawn — start a sub-agent to do a focused piece of work and return its result to you.\n\n' +
+  'Steps:\n' +
+  '1. Explore the repository with openwiki::src::* (always pass the given id) until you understand its modules and concepts.\n' +
+  '2. Decide a reader-facing wiki: one page per real subsystem or concept. Scale the page count to the repo (tiny <25 files: 3-6 pages; small: 8-14; medium: 16-28; large or doc-heavy: 30-48).\n' +
+  '3. WRITE the wiki by spawning ONE page-writer sub-agent per page with harness::spawn. Put ALL the spawns in a SINGLE message so they run in parallel. For each spawn: give it session_id "<id-prefix>/<slug>"; allow it only the openwiki::src::* functions; set its output contract to json {markdown}. Do NOT set a model or provider on the spawns — the sub-agents automatically use yours; never name a model. Do NOT write any page yourself.\n' +
+  '   Each sub-agent task MUST demand a substantial, source-grounded page: read the relevant source first (openwiki::src::*, same id); at least 3 "##" sections; a "## Relevant Source Files" section naming the key files; explain WHY the code is shaped this way, not only what it does; ground claims with "Sources: path/a.ts, path/b.ts" lines and inline path:line references; 400-900 words of real prose. CRITICAL: wherever a picture aids understanding (architecture, data flow, execution flow, a state machine, a class or module relationship), the sub-agent MUST embed a small valid Mermaid diagram INLINE as a ```mermaid fenced code block placed in the relevant section (flowchart / sequenceDiagram / classDiagram). Tell each sub-agent this explicitly.\n' +
+  '4. When every sub-agent has returned, submit your final result.\n\n' +
+  'Final result JSON: { summary, navigation:[navNode], pages:[{ slug, title, category, markdown }] }, where pages holds the markdown each sub-agent returned and navigation is a nested tree (folders have title+children and no slug; leaves have title+slug).';
+
+const WIKI_ORCHESTRATOR_OUT = {
+  type: 'object',
+  additionalProperties: true,
+  required: ['pages'],
+  properties: {
+    summary: { type: 'string' },
+    navigation: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    pages: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: true,
+        required: ['slug', 'markdown'],
+        properties: {
+          slug: { type: 'string' }, title: { type: 'string' },
+          category: { type: 'string' }, markdown: { type: 'string' },
+          citations: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
+    },
+  },
+};
+
+// Drive the whole generation as one native agentic session. Returns the wiki the
+// orchestrator assembled from its sub-agents, plus the root session id (page
+// children nest under it in the console).
+export async function runOrchestrator(worker, { wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 60, timeoutMs = 600_000 }) {
+  const resolved = await resolveModel(worker, model);
+  if (!resolved.resolved) throw new Error('no model available for the orchestrator');
+  const root = wikiParentSession(repoName, wikiId);
+  const message =
+    `Repository: ${repoName} (${repoUrl})\n` +
+    `Wiki id (pass as "id" to every openwiki::src::* call, and use "${root}/<slug>" as each sub-agent's session_id): ${wikiId}` +
+    (docsHint || '') +
+    '\nExplore, decide the pages, spawn a page-writer sub-agent per page, then submit the wiki.';
+  const { session_id } = await worker.trigger({
+    function_id: 'harness::send',
+    payload: {
+      session_id: root,
+      session: { title: 'openwiki: ' + repoName },
+      message,
+      model: resolved.model,
+      ...(resolved.provider ? { provider: resolved.provider } : {}),
+      options: {
+        system_prompt: ORCHESTRATOR_SYSTEM,
+        output: { type: 'json', schema: WIKI_ORCHESTRATOR_OUT },
+        functions: { allow: ['harness::spawn', 'openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
+        max_turns: maxTurns,
+      },
+    },
+    timeoutMs: 30_000,
+  });
+  if (!session_id) throw new Error('orchestrator send returned no session_id');
+  const result = await awaitTurn(worker, session_id, { timeoutMs });
+  if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('orchestrator returned no pages');
+  return { summary: result.summary || '', navigation: Array.isArray(result.navigation) ? result.navigation : [], pages: result.pages, sessionId: session_id };
+}
+
 const PLAN_SYSTEM =
   'You are OpenWiki planning a documentation wiki for a code repository.\n' +
   'Explore the repository first (always pass the given id):\n' +
@@ -221,43 +300,56 @@ const PLAN_SYSTEM =
 // Plan a wiki by having the harness explore the clone (openwiki::src::*), so the
 // structure reflects the real repo rather than a heuristic template. Throws when
 // the harness is unavailable; the caller falls back to the router/heuristic plan.
-export async function planViaHarness(worker, { wikiId, repoName, repoUrl, model, docsHint = '', parentSessionId, maxTurns = 24, timeoutMs = 300_000 }) {
+export async function planViaHarness(worker, { wikiId, repoName, repoUrl, model, docsHint = '', parentSessionId, maxTurns = 24, timeoutMs = 300_000, maxAttempts = 3, onRetry }) {
   const resolved = await resolveModel(worker, model);
   if (!resolved.resolved) throw new Error('no model available for harness plan');
-  const parent = parentSessionId || wikiParentSession(repoName, wikiId);
+  const base = parentSessionId || wikiParentSession(repoName, wikiId);
   const message =
     `Repository: ${repoName} (${repoUrl})\n` +
     `Wiki id (pass as "id" to every openwiki::src::* call): ${wikiId}` +
     (docsHint || '') +
     '\nExplore the repository, then return the wiki plan JSON.';
-  // The plan runs in the wiki's named parent session; page turns link to it, so
-  // the console shows one titled tree per wiki instead of scattered s_… ids.
-  const { session_id } = await worker.trigger({
-    function_id: 'harness::send',
-    payload: {
-      session_id: parent,
-      session: { title: 'openwiki: ' + repoName },
-      message,
-      model: resolved.model,
-      ...(resolved.provider ? { provider: resolved.provider } : {}),
-      options: {
-        system_prompt: PLAN_SYSTEM,
-        output: { type: 'json', schema: PLAN_HARNESS_OUT },
-        functions: { allow: ['openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
-        max_turns: maxTurns,
-      },
-    },
-    timeoutMs: 30_000,
-  });
-  if (!session_id) throw new Error('harness::send returned no session_id for plan');
-  const result = await awaitTurn(worker, session_id, { timeoutMs });
-  if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('harness returned an empty plan');
-  return {
-    summary: result.summary || '',
-    pages: result.pages,
-    navigation: Array.isArray(result.navigation) ? result.navigation : [],
-    sessionId: session_id,
-  };
+  // The plan is a long agentic turn (explore + structured output). Provider
+  // streaming is the flakiest part of it ("stream ended without a terminal
+  // frame"), and one failure would otherwise sink the whole generation. Retry
+  // on a FRESH session each attempt so a failed turn's partial transcript never
+  // bloats the retry (which would only make the next stream more likely to drop).
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const parent = attempt === 1 ? base : base + ':r' + attempt;
+    try {
+      const { session_id } = await worker.trigger({
+        function_id: 'harness::send',
+        payload: {
+          session_id: parent,
+          session: { title: 'openwiki: ' + repoName },
+          message,
+          model: resolved.model,
+          ...(resolved.provider ? { provider: resolved.provider } : {}),
+          options: {
+            system_prompt: PLAN_SYSTEM,
+            output: { type: 'json', schema: PLAN_HARNESS_OUT },
+            functions: { allow: ['openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
+            max_turns: maxTurns,
+          },
+        },
+        timeoutMs: 30_000,
+      });
+      if (!session_id) throw new Error('harness::send returned no session_id for plan');
+      const result = await awaitTurn(worker, session_id, { timeoutMs });
+      if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('harness returned an empty plan');
+      return {
+        summary: result.summary || '',
+        pages: result.pages,
+        navigation: Array.isArray(result.navigation) ? result.navigation : [],
+        sessionId: session_id,
+      };
+    } catch (e) {
+      lastErr = e;
+      if (attempt < maxAttempts) { try { onRetry?.(attempt, e); } catch { /* ignore */ } await sleep(1500 * attempt); }
+    }
+  }
+  throw lastErr || new Error('harness plan failed');
 }
 
 // Tiered page writer: harness (agentic, cited) -> router/heuristic (generate.mjs).
