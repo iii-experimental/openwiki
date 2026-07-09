@@ -129,6 +129,21 @@ export async function deletePage(wikiId, slug) {
   });
 }
 
+// Remove a wiki entirely: every page body, the page index, all per-wiki side
+// records, the wiki meta, and the ephemeral clone. Best-effort per key so a
+// partial store still clears the wiki from the list.
+export async function deleteWiki(wikiId) {
+  const idx = await getIndex(wikiId);
+  const slugs = idx.length ? idx.map((e) => e.slug) : (await slist(pagesScope(wikiId))).map((p) => p.slug);
+  for (const slug of slugs) await sdel(pagesScope(wikiId), slug);
+  await sdel(S_PAGE_INDEX, wikiId);
+  await sdel(S_OUTLINE, wikiId);
+  await sdel(S_STATUS, wikiId);
+  await sdel(S_LOG, wikiId);
+  await sdel(S_WIKIS, wikiId);
+  try { await fs.rm(repoDir(wikiId), { recursive: true, force: true }); } catch { /* ephemeral */ }
+}
+
 // Slugs whose source_paths or citations touch any of `changedPaths`. Drives
 // incremental refresh — reads only the lightweight index, never page bodies.
 export async function pagesForPaths(wikiId, changedPaths) {

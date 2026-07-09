@@ -451,6 +451,21 @@ worker.registerFunction(
 );
 
 worker.registerFunction(
+  'openwiki::delete',
+  async (a) => {
+    const id = needId(a, 'openwiki::delete');
+    if (inflight.has(id)) throw err('openwiki/generating', 'wiki is generating; stop it before deleting');
+    await store.deleteWiki(id);
+    return { id, deleted: true };
+  },
+  {
+    description: 'Delete a wiki and all its pages. Params: { id }.',
+    request_format: S.WIKI_REQ,
+    response_format: { type: 'object', additionalProperties: false, required: ['id', 'deleted'], properties: { id: { type: 'string' }, deleted: { type: 'boolean' } } },
+  },
+);
+
+worker.registerFunction(
   'openwiki::lint',
   async ({ id }) => lintWiki(id),
   { description: 'Validate every page citation against the clone and flag thin pages.', request_format: S.LINT_REQ, response_format: S.LINT_RES },
@@ -667,6 +682,14 @@ worker.registerFunction('openwiki::http::wiki-status', async ({ path_params }) =
   return jsonResponse(200, s || { phase: 'unknown', progress: 0, updated_at: now() });
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id/status'));
 
+worker.registerFunction('openwiki::http::wiki-delete', async ({ path_params }) => {
+  const id = path_params?.id;
+  if (!id) return jsonResponse(400, { error: 'id required' });
+  if (inflight.has(id)) return jsonResponse(409, { error: 'wiki is generating; stop it before deleting' });
+  await store.deleteWiki(id);
+  return jsonResponse(200, { id, deleted: true });
+}, HTTP_META('HTTP DELETE /openwiki/api/wikis/:id'));
+
 worker.registerFunction('openwiki::http::pages-list', async ({ path_params }) => {
   const items = await store.listPages(path_params?.id);
   return jsonResponse(200, items.map((x) => ({ slug: x.slug, ...x.meta })));
@@ -746,6 +769,7 @@ bind('openwiki::http::wikis-list', 'openwiki/api/wikis', 'GET');
 bind('openwiki::http::models', 'openwiki/api/models', 'GET');
 bind('openwiki::http::wikis-create', 'openwiki/api/wikis', 'POST');
 bind('openwiki::http::wiki-get', 'openwiki/api/wikis/:id', 'GET');
+bind('openwiki::http::wiki-delete', 'openwiki/api/wikis/:id', 'DELETE');
 bind('openwiki::http::wiki-status', 'openwiki/api/wikis/:id/status', 'GET');
 bind('openwiki::http::pages-list', 'openwiki/api/wikis/:id/pages', 'GET');
 bind('openwiki::http::page-get', 'openwiki/api/wikis/:id/pages/:slug', 'GET');

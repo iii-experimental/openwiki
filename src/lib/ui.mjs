@@ -133,7 +133,13 @@ export const INDEX_HTML = String.raw`<!doctype html>
     display:flex;flex-direction:column;gap:3px;border:1px solid transparent;border-left:2px solid transparent}
   .wiki-item:hover{background:var(--panel)}
   .wiki-item.active{background:var(--panel);border-left-color:var(--accent)}
+  .wiki-item .wiki-head{display:flex;align-items:center;gap:8px}
+  .wiki-item .wiki-head .name{flex:1;min-width:0}
   .wiki-item .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wiki-del{flex:none;border:none;background:none;color:var(--text-dim);font-size:15px;line-height:1;
+    cursor:pointer;padding:0 3px;opacity:0;transition:opacity .12s,color .12s}
+  .wiki-item:hover .wiki-del{opacity:.55}
+  .wiki-del:hover{opacity:1;color:var(--danger)}
   .wiki-item .meta{font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums}
   .wiki-item .genrow{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--accent);
     text-transform:lowercase;letter-spacing:.04em;font-variant-numeric:tabular-nums}
@@ -717,7 +723,17 @@ export const INDEX_HTML = String.raw`<!doctype html>
     const node = el('div', {
       class: 'wiki-item' + (state.currentWikiId === w.id ? ' active' : ''),
       onclick: () => selectWiki(w.id),
-    }, el('div', { class:'name', text: w.repo_name || w.id }));
+    });
+    const head = el('div', { class:'wiki-head' }, el('div', { class:'name', text: w.repo_name || w.id }));
+    // Delete control: hover-revealed X per wiki. Hidden while generating (stop it
+    // first). stopPropagation so removing does not also select the wiki.
+    if (!generating) {
+      head.appendChild(el('button', {
+        class: 'wiki-del', title: 'Remove this wiki', 'aria-label': 'Remove this wiki',
+        onclick: (e) => { e.stopPropagation(); deleteWiki(w.id); },
+      }, '×'));
+    }
+    node.appendChild(head);
     // While generating, the stored page_count is stale (0 until finalize). Show
     // the live count from the progress stream instead of a confusing "0 pages".
     if (generating && !err) {
@@ -738,6 +754,19 @@ export const INDEX_HTML = String.raw`<!doctype html>
       if (!err) node.appendChild(el('div', { class:'progressbar' }, el('div', { style: 'width:' + pct + '%' })));
     }
     return node;
+  }
+
+  async function deleteWiki(id) {
+    try { await api('/wikis/' + id, { method: 'DELETE' }); }
+    catch (e) { flashError('Could not remove wiki: ' + (e.message || e)); return; }
+    state.wikis = state.wikis.filter((w) => w.id !== id);
+    state.generating.delete(id);
+    if (state.currentWikiId === id) {
+      state.currentWikiId = null; state.currentSlug = null; state.currentWiki = null;
+      state.pages = []; location.hash = '';
+      renderMain(null); renderPageList(); renderBreadcrumb();
+    }
+    renderWikiList();
   }
 
   //--- generation flow
