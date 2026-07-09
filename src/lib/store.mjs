@@ -133,8 +133,15 @@ export async function deletePage(wikiId, slug) {
 // records, the wiki meta, and the ephemeral clone. Best-effort per key so a
 // partial store still clears the wiki from the list.
 export async function deleteWiki(wikiId) {
-  const idx = await getIndex(wikiId);
-  const slugs = idx.length ? idx.map((e) => e.slug) : (await slist(pagesScope(wikiId))).map((p) => p.slug);
+  // sdel already swallows per-key errors, so the deletions below are each
+  // best-effort on their own. Guard the page enumeration too: if getIndex or
+  // slist throws we still want the side records and the wiki meta removed, so a
+  // transient read error cannot strand the wiki in the list.
+  let slugs = [];
+  try {
+    const idx = await getIndex(wikiId);
+    slugs = idx.length ? idx.map((e) => e.slug) : (await slist(pagesScope(wikiId))).map((p) => p.slug);
+  } catch { /* enumeration failed; still clear the records below */ }
   for (const slug of slugs) await sdel(pagesScope(wikiId), slug);
   await sdel(S_PAGE_INDEX, wikiId);
   await sdel(S_OUTLINE, wikiId);

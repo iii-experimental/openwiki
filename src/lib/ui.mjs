@@ -139,7 +139,8 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .wiki-del{flex:none;border:none;background:none;color:var(--text-dim);font-size:15px;line-height:1;
     cursor:pointer;padding:0 3px;opacity:0;transition:opacity .12s,color .12s}
   .wiki-item:hover .wiki-del{opacity:.55}
-  .wiki-del:hover{opacity:1;color:var(--danger)}
+  .wiki-del:hover,.wiki-del:focus,.wiki-del:focus-visible{opacity:1;color:var(--danger)}
+  @media (hover:none){.wiki-del{opacity:.55}}
   .wiki-item .meta{font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums}
   .wiki-item .genrow{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--accent);
     text-transform:lowercase;letter-spacing:.04em;font-variant-numeric:tabular-nums}
@@ -764,6 +765,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     if (state.currentWikiId === id) {
       state.currentWikiId = null; state.currentSlug = null; state.currentWiki = null;
       state.pages = []; location.hash = '';
+      $('wiki-actions').classList.remove('on');
       renderMain(null); renderPageList(); renderBreadcrumb();
     }
     renderWikiList();
