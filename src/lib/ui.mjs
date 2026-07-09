@@ -120,6 +120,13 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .newwiki button{background:var(--accent);color:var(--accent-fg);border:1px solid var(--accent);
     border-radius:0;padding:8px 12px;font-weight:600;text-transform:lowercase;letter-spacing:.04em}
   .newwiki button:disabled{background:transparent;color:var(--ink-ghost);border-color:var(--border);cursor:not-allowed}
+  .model-select{background:transparent;border:1px solid var(--border);border-radius:0;
+    padding:7px 8px;color:var(--text);outline:none;font-size:12px}
+  .model-select:focus{border-color:var(--accent)}
+  .model-select:disabled{color:var(--ink-ghost);opacity:.6}
+  .model-hint{font-size:11px;color:var(--ink-ghost);line-height:1.45;display:none}
+  .model-hint.show{display:block}
+  .model-hint a{color:var(--accent)}
 
   .wikilist{display:flex;flex-direction:column;gap:1px}
   .wiki-item{padding:9px 10px;border-radius:0;cursor:pointer;
@@ -295,6 +302,8 @@ export const INDEX_HTML = String.raw`<!doctype html>
       <h3>New wiki</h3>
       <form class="newwiki" id="newwiki-form">
         <input id="repo-url" placeholder="https://github.com/owner/repo" autocomplete="off" />
+        <select id="model-select" class="model-select" title="generation model"></select>
+        <div class="model-hint" id="model-hint"></div>
         <button type="submit" id="gen-btn" disabled>Generate</button>
       </form>
     </div>
@@ -649,6 +658,41 @@ export const INDEX_HTML = String.raw`<!doctype html>
     renderWikiList();
   }
 
+  // Populate the generation model picker from the router's live catalog, grouped
+  // by provider. Credentials stay in llm-router; when no provider is configured
+  // the catalog is empty and we point the user at the console to set one up.
+  async function loadModels() {
+    const sel = $('model-select');
+    const hint = $('model-hint');
+    if (!sel) return;
+    let data = { models: [], default_model: '' };
+    try { data = await api('/models'); } catch (_) { /* router absent */ }
+    const models = data.models || [];
+    sel.textContent = '';
+    if (!models.length) {
+      sel.style.display = 'none';
+      if (hint) {
+        hint.className = 'model-hint show';
+        hint.textContent = 'No model provider configured. Set one up in the console chat, then reload — pages fall back to a heuristic build until then.';
+      }
+      return;
+    }
+    if (hint) hint.className = 'model-hint';
+    sel.style.display = '';
+    const byProvider = new Map();
+    for (const m of models) {
+      if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+      byProvider.get(m.provider).push(m);
+    }
+    for (const [provider, list] of byProvider) {
+      const group = el('optgroup', { label: provider });
+      for (const m of list) group.appendChild(el('option', { value: m.id, text: m.id }));
+      sel.appendChild(group);
+    }
+    const def = data.default_model;
+    if (def && models.some((m) => m.id === def)) sel.value = def;
+  }
+
   function renderWikiList() {
     const root = $('wikilist');
     root.textContent = '';
@@ -698,12 +742,14 @@ export const INDEX_HTML = String.raw`<!doctype html>
 
   //--- generation flow
   async function generateWiki(repoUrl) {
+    const sel = $('model-select');
+    const model = sel && sel.value ? sel.value : undefined;
     let resp;
     try {
       resp = await api('/wikis', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ repo_url: repoUrl }),
+        body: JSON.stringify({ repo_url: repoUrl, ...(model ? { model } : {}) }),
       });
     } catch (e) {
       flashError('Generate failed: ' + e.message);
@@ -1254,6 +1300,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
   async function boot() {
     bindUI();
     await loadWikis();
+    loadModels();
     const { wikiId, slug } = parseHash();
     if (wikiId) {
       selectWiki(wikiId, slug);

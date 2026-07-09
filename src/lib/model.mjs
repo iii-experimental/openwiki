@@ -43,3 +43,19 @@ export async function resolveModel(worker, preferred) {
 }
 
 export function clearModelCache() { cache.clear(); }
+
+// The router's live model catalog, trimmed to what the UI's picker needs.
+// Returns [] when llm-router is absent (no provider configured), which the UI
+// treats as "set up a provider in the console".
+export async function listModels(worker) {
+  let models = [];
+  try {
+    const res = await worker.trigger({ function_id: 'router::models::list', payload: {} });
+    models = res?.models || (Array.isArray(res) ? res : []);
+  } catch {
+    return [];
+  }
+  return models
+    .filter((m) => m && m.id)
+    .map((m) => ({ id: m.id, provider: m.provider || 'unknown', supports_structured_output: !!m.supports_structured_output }));
+}

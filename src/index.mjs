@@ -14,7 +14,7 @@ import { searchPages } from './lib/search.mjs';
 import { planWiki } from './lib/generate.mjs';
 import { generatePageAny, planViaHarness, runOrchestrator, mapResult, wikiParentSession } from './lib/harness.mjs';
 import { slugify } from './lib/ask.mjs';
-import { resolveModel } from './lib/model.mjs';
+import { resolveModel, listModels } from './lib/model.mjs';
 import * as turnbus from './lib/turnbus.mjs';
 import { srcRead, srcList, srcGrep, invalidateInventory, getReadStats, resetReadStats } from './lib/src.mjs';
 import { lintWiki } from './lib/lint.mjs';
@@ -358,6 +358,12 @@ worker.registerFunction(
 );
 
 worker.registerFunction(
+  'openwiki::models',
+  async () => ({ models: await listModels(worker), default_model: cfg.model }),
+  { description: "Models available via llm-router (for the UI's model picker), plus the configured default. Empty when no provider is configured.", request_format: S.MODELS_REQ, response_format: S.MODELS_RES },
+);
+
+worker.registerFunction(
   'openwiki::wiki',
   async ({ id }) => {
     const m = await store.getWiki(id);
@@ -536,6 +542,8 @@ worker.registerFunction('openwiki::http::ui', async () => htmlResponse(200, INDE
 
 worker.registerFunction('openwiki::http::wikis-list', async () => jsonResponse(200, await store.listWikis()), HTTP_META('HTTP GET /openwiki/api/wikis'));
 
+worker.registerFunction('openwiki::http::models', async () => jsonResponse(200, { models: await listModels(worker), default_model: cfg.model }), HTTP_META('HTTP GET /openwiki/api/models'));
+
 worker.registerFunction('openwiki::http::wikis-create', async ({ body }) => {
   const payload = parseBody(body);
   if (!payload.repo_url) return jsonResponse(400, { error: 'repo_url required' });
@@ -629,6 +637,7 @@ function bind(function_id, api_path, http_method = 'GET') {
 bind('openwiki::http::ui', 'openwiki', 'GET');
 bind('openwiki::http::ui', 'openwiki/', 'GET');
 bind('openwiki::http::wikis-list', 'openwiki/api/wikis', 'GET');
+bind('openwiki::http::models', 'openwiki/api/models', 'GET');
 bind('openwiki::http::wikis-create', 'openwiki/api/wikis', 'POST');
 bind('openwiki::http::wiki-get', 'openwiki/api/wikis/:id', 'GET');
 bind('openwiki::http::wiki-status', 'openwiki/api/wikis/:id/status', 'GET');

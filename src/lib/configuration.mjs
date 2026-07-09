@@ -5,7 +5,7 @@ const CONFIG_ID = 'openwiki';
 const CONFIG_FN_ID = 'openwiki::on-config-change';
 
 const DEFAULTS = {
-  model: process.env.OPENWIKI_MODEL || 'claude-sonnet-4-6',
+  model: process.env.OPENWIKI_MODEL || 'claude-haiku-4-5-20251001',
   max_parallel: Math.max(1, parseInt(process.env.OPENWIKI_MAX_PARALLEL || '3', 10)),
 };
 
@@ -16,7 +16,7 @@ function schema() {
     properties: {
       model: {
         type: 'string',
-        description: 'Default generation model id, routed via llm-router (e.g. claude-sonnet-4-6).',
+        description: 'Default generation model id, routed via llm-router (e.g. claude-haiku-4-5-20251001).',
         default: DEFAULTS.model,
       },
       max_parallel: {

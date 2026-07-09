@@ -1,17 +1,23 @@
 # Example engine config for running openwiki locally.
 #
-# Start the engine from a directory containing this file:
-#   iii -c config.yaml
-# Then, in another terminal, run the worker:
+# The simplest path is to let `iii worker add` manage config.yaml for you:
+#   iii                                # start the engine (serves HTTP on :3111)
+#   iii worker add harness console     # pulls the whole stack + trace UI
 #   III_URL=ws://127.0.0.1:49134 node src/index.mjs
 #
-# openwiki depends on these workers being present on the engine:
+# `harness` transitively pulls everything openwiki composes (llm-router,
+# session-manager, context-manager, shell, the providers, iii-state, iii-cron,
+# web). The engine serves openwiki's /openwiki UI + JSON API natively, so no
+# separate http worker is needed. `console` is the optional trace + chat UI.
+#
+# If you prefer to declare workers explicitly instead, this is the full set:
 workers:
-  - name: configuration   # openwiki registers its config schema here
-  - name: iii-state       # wiki content persistence
-  - name: iii-http        # serves the /openwiki UI + JSON API
-  - name: iii-cron        # nightly refresh
-  - name: llm-router      # openwiki calls router::complete
+  - name: harness         # agentic page generation; pulls the stack below
+  - name: llm-router      # model resolution + the fast (router) tier
+  - name: session-manager
+  - name: context-manager
+  - name: shell           # jailed git (clone / diff) + the console dir picker
+  - name: console         # trace + chat UI (optional)
   # A model provider must be installed and configured in the llm-router config,
   # for example:
   # - name: provider-anthropic
