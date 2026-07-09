@@ -201,62 +201,55 @@ export async function generatePageViaHarness(worker, opts) {
   return best;
 }
 
-// Native orchestrator: ONE agent session does the whole job the harness way.
-// The system prompt makes spawning part of the task, so the agent calls
-// harness::spawn itself (in-turn) — that is how the harness loop delegates, not
-// an injected "now spawn" directive. The harness parks the parent, runs the
-// page-writer children in parallel, delivers each result back to the parent, and
-// the parent assembles + submits the wiki. openwiki just reads the final result.
+// Native orchestrator: ONE lead agent session runs the whole job the harness
+// way. The lead researches once, decides the pages, then DELEGATES each page to a
+// writer sub-agent via harness::spawn (in-turn) — that is how the harness loop
+// delegates, not an injected "now spawn" directive. Each writer stores its own
+// finished page by calling openwiki::write-page, so the lead never collects
+// markdown (parent-side assembly of N pages was the bottleneck). The lead only
+// submits the summary + navigation; the pages are already in the store.
 const ORCHESTRATOR_SYSTEM =
-  'You are OpenWiki. Turn a code repository into a source-grounded wiki by DELEGATING each page to a sub-agent.\n\n' +
+  'You are OpenWiki. Turn a code repository into a source-grounded wiki by RESEARCHING it once and then DELEGATING each page to a writer sub-agent.\n\n' +
   'You have these functions:\n' +
   '- openwiki::src::list { id, dir? } — the file tree.\n' +
   '- openwiki::src::read { id, path, from?, to? } — read a file.\n' +
   '- openwiki::src::grep { id, pattern } — search contents.\n' +
-  '- harness::spawn — start a sub-agent to do a focused piece of work and return its result to you.\n\n' +
+  '- harness::spawn — start a writer sub-agent that does a focused piece of work and returns its result to you.\n\n' +
   'Steps:\n' +
-  '1. Explore the repository with openwiki::src::* (always pass the given id) until you understand its modules and concepts.\n' +
-  '2. Decide a reader-facing wiki: one page per real subsystem or concept. Scale the page count to the repo (tiny <25 files: 3-6 pages; small: 8-14; medium: 16-28; large or doc-heavy: 30-48).\n' +
-  '3. WRITE the wiki by spawning ONE page-writer sub-agent per page with harness::spawn. Put ALL the spawns in a SINGLE message so they run in parallel. For each spawn: give it session_id "<id-prefix>/<slug>"; allow it only the openwiki::src::* functions; set its output contract to json {markdown}. Do NOT set a model or provider on the spawns — the sub-agents automatically use yours; never name a model. Do NOT write any page yourself.\n' +
-  '   Each sub-agent task MUST demand a substantial, source-grounded page: read the relevant source first (openwiki::src::*, same id); at least 3 "##" sections; a "## Relevant Source Files" section naming the key files; explain WHY the code is shaped this way, not only what it does; ground claims with "Sources: path/a.ts, path/b.ts" lines and inline path:line references; 400-900 words of real prose. CRITICAL: wherever a picture aids understanding (architecture, data flow, execution flow, a state machine, a class or module relationship), the sub-agent MUST embed a small valid Mermaid diagram INLINE as a ```mermaid fenced code block placed in the relevant section (flowchart / sequenceDiagram / classDiagram). Tell each sub-agent this explicitly.\n' +
-  '4. When every sub-agent has returned, submit your final result.\n\n' +
-  'Final result JSON: { summary, navigation:[navNode], pages:[{ slug, title, category, markdown }] }, where pages holds the markdown each sub-agent returned and navigation is a nested tree (folders have title+children and no slug; leaves have title+slug).';
+  '1. RESEARCH the repository with openwiki::src::* (always pass the given id) until you understand its modules, entry points, and core concepts. Read enough that you can brief a writer without them re-reading everything.\n' +
+  '2. PLAN the wiki as a proper documentation INDEX — the way DeepWiki or a good docs site is organized: a hierarchical table of contents that both a human and an LLM can navigate top to bottom. Decide the pages (one per real subsystem or concept) AND how they group into sections. Let the REPOSITORY drive the shape, do not impose a fixed template: a small library is a handful of pages under 2-4 sections; a large repo gets many sections, each with several pages, nested more than one level where a subsystem has sub-topics. Do NOT compress a big, varied repo into a few broad buckets, and do NOT invent sections the repo does not have. ORDER the whole index the way a reader learns the project: Overview / what-is-this FIRST, then Getting Started / Installation, then Core Concepts & Architecture, then one section per major subsystem or feature in dependency order, then API Reference, then Integration / Examples, and finally Advanced / Internals / Deployment / Performance. API Reference is never first. Scale the page count to the repo (tiny <25 files: 3-6 pages; small: 8-14; medium: 16-28; large or doc-heavy: 30-48+). For each page decide: a slug, a title, its section, the 2-6 source files that page must cover, and a one-line angle. Write a short shared "repo brief" (what the repo is, its architecture, the main modules) that you will hand to every writer so they do not re-discover it.\n' +
+  '3. WRITE the wiki by spawning ONE writer sub-agent per page with harness::spawn. Put ALL the spawns in a SINGLE message so they run in parallel. For each spawn: give it session_id "<root>/<slug>"; allow it ONLY the functions openwiki::src::read, openwiki::src::list, openwiki::src::grep, and openwiki::write-page; set its output contract to json {slug, ok}. Do NOT set a model or provider on the spawns — the sub-agents automatically use yours; never name a model. Do NOT write any page yourself.\n' +
+  '   Each writer task MUST contain: the shared repo brief; the page slug, title, and category; the specific source files to read first (it reads them with openwiki::src::* using the same id — only its focused files, not the whole repo); and this instruction: produce a substantial, source-grounded page — at least 3 "##" sections; a "## Relevant Source Files" section naming the key files; explain WHY the code is shaped this way, not only what it does; ground claims with inline path:line references; 400-900 words of real prose. CRITICAL requirements the writer must follow:\n' +
+  '   - API REFERENCE: if the page documents functions, methods, options, config keys, CLI flags, or return shapes, include an "## API Reference" section that presents them as a GitHub-flavored Markdown TABLE (e.g. columns Parameter | Type | Description, and a Returns row/table). Use real signatures and types read from the source.\n' +
+  '   - DIAGRAMS: wherever a picture aids understanding (architecture, data flow, execution flow, a state machine, a class or module relationship), embed a small valid Mermaid diagram INLINE as a ```mermaid fenced code block (flowchart / sequenceDiagram / classDiagram).\n' +
+  '   - REFERENCES: when the writer calls openwiki::write-page, it MUST pass a citations array — one entry per source it actually used, each { path, start_line, end_line, note } with the REAL line range it read for that claim (the note is a short description). These become the clickable References list on the page, so they must be accurate. Also pass source_paths (the files the page covers).\n' +
+  '   When the page is ready the writer MUST call openwiki::write-page { id, slug, title, category, markdown, source_paths, citations } to store it (write-page REJECTS pages under ~250 characters, so EVERY page — including overview, getting-started, and installation — must be genuinely substantial; ground even those in the README and entry files), then return { slug, ok:true }. Tell each writer this explicitly.\n' +
+  '4. When every writer has returned ok, submit your final result. The pages are already stored, so do NOT include page bodies.\n\n' +
+  'Final result JSON: { summary, navigation }. navigation IS the wiki\'s table of contents: a nested tree where a SECTION is { title, children:[...] } with no slug, and a PAGE is { title, slug } whose slug matches a page you delegated. Sections and pages MUST appear in the reading order from step 2 (Overview first; API Reference, Advanced, Deployment later) and may nest more than one level deep. Make it complete and well-ordered — every page you delegated appears exactly once.';
 
 const WIKI_ORCHESTRATOR_OUT = {
   type: 'object',
   additionalProperties: true,
-  required: ['pages'],
+  required: ['navigation'],
   properties: {
     summary: { type: 'string' },
     navigation: { type: 'array', items: { type: 'object', additionalProperties: true } },
-    pages: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: true,
-        required: ['slug', 'markdown'],
-        properties: {
-          slug: { type: 'string' }, title: { type: 'string' },
-          category: { type: 'string' }, markdown: { type: 'string' },
-          citations: { type: 'array', items: { type: 'object', additionalProperties: true } },
-        },
-      },
-    },
   },
 };
 
-// Drive the whole generation as one native agentic session. Returns the wiki the
-// orchestrator assembled from its sub-agents, plus the root session id (page
-// children nest under it in the console).
+// Drive the whole generation as one native agentic session. The writer children
+// store their pages directly (openwiki::write-page); this returns only what the
+// lead submits — summary + navigation — plus the root session id (children nest
+// under it in the console).
 export async function runOrchestrator(worker, { wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 60, timeoutMs = 600_000 }) {
   const resolved = await resolveModel(worker, model);
   if (!resolved.resolved) throw new Error('no model available for the orchestrator');
   const root = wikiParentSession(repoName, wikiId);
   const message =
     `Repository: ${repoName} (${repoUrl})\n` +
-    `Wiki id (pass as "id" to every openwiki::src::* call, and use "${root}/<slug>" as each sub-agent's session_id): ${wikiId}` +
+    `Wiki id (pass as "id" to every openwiki::src::* and openwiki::write-page call, and use "${root}/<slug>" as each writer's session_id): ${wikiId}` +
     (docsHint || '') +
-    '\nExplore, decide the pages, spawn a page-writer sub-agent per page, then submit the wiki.';
+    '\nResearch the repo, plan the pages, spawn one writer sub-agent per page (each writer stores its page with openwiki::write-page), then submit the summary and navigation.';
   const { session_id } = await worker.trigger({
     function_id: 'harness::send',
     payload: {
@@ -268,7 +261,7 @@ export async function runOrchestrator(worker, { wikiId, repoName, repoUrl, model
       options: {
         system_prompt: ORCHESTRATOR_SYSTEM,
         output: { type: 'json', schema: WIKI_ORCHESTRATOR_OUT },
-        functions: { allow: ['harness::spawn', 'openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
+        functions: { allow: ['harness::spawn', 'openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep', 'openwiki::write-page'] },
         max_turns: maxTurns,
       },
     },
@@ -276,8 +269,8 @@ export async function runOrchestrator(worker, { wikiId, repoName, repoUrl, model
   });
   if (!session_id) throw new Error('orchestrator send returned no session_id');
   const result = await awaitTurn(worker, session_id, { timeoutMs });
-  if (!result || !Array.isArray(result.pages) || result.pages.length < 1) throw new Error('orchestrator returned no pages');
-  return { summary: result.summary || '', navigation: Array.isArray(result.navigation) ? result.navigation : [], pages: result.pages, sessionId: session_id };
+  if (!result) throw new Error('orchestrator returned no result');
+  return { summary: result.summary || '', navigation: Array.isArray(result.navigation) ? result.navigation : [], sessionId: session_id };
 }
 
 const PLAN_SYSTEM =

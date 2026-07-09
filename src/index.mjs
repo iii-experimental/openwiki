@@ -12,7 +12,7 @@ import { inventoryRepo, readSourceFile } from './lib/inventory.mjs';
 import * as store from './lib/store.mjs';
 import { searchPages } from './lib/search.mjs';
 import { planWiki } from './lib/generate.mjs';
-import { generatePageAny, planViaHarness, runOrchestrator, mapResult, wikiParentSession } from './lib/harness.mjs';
+import { generatePageAny, planViaHarness, runOrchestrator, wikiParentSession, citationUrl } from './lib/harness.mjs';
 import { slugify } from './lib/ask.mjs';
 import { resolveModel, listModels } from './lib/model.mjs';
 import * as turnbus from './lib/turnbus.mjs';
@@ -21,7 +21,7 @@ import { lintWiki } from './lib/lint.mjs';
 import { askWiki } from './lib/ask.mjs';
 import { makeDiagram } from './lib/diagram.mjs';
 import { exportAgentsMd } from './lib/agents_md.mjs';
-import { normalizePlan } from './lib/nav.mjs';
+import { normalizePlan, navSlugs } from './lib/nav.mjs';
 import { fetchDocsIndex, docsHint as buildDocsHint } from './lib/docs_oracle.mjs';
 import { pushProgress, onProgress } from './lib/progress.mjs';
 import { INDEX_HTML } from './lib/ui.mjs';
@@ -42,6 +42,9 @@ store.ensureRoot().catch((e) => console.error('[openwiki] ensureRoot', e));
 
 const now = () => new Date().toISOString();
 const inflight = new Set();
+// Live page count during native generation: writer sub-agents store pages via
+// openwiki::write-page, which bumps this to drive the progress bar + feed.
+const pagesWritten = new Map();
 
 // Persist status AND push it to any live SSE subscriber for this wiki.
 async function setStatus(wikiId, status) {
@@ -55,11 +58,51 @@ function err(code, message) {
   return e;
 }
 
+// Agents (especially via the harness) routinely guess parameter names — wiki_id
+// for id, query for q, path for slug. The engine does not validate request_format
+// on agent tool calls, so a wrong name reaches the handler and dies with a cryptic
+// state::get error. Resolve the common aliases up front and fail with a clear,
+// self-correcting message instead.
+function wikiIdOf(a) { return a?.id || a?.wiki_id || a?.wikiId || a?.wikiID; }
+function needId(a, fn) {
+  const id = wikiIdOf(a);
+  if (!id) throw err('openwiki/bad_request', `${fn} requires the wiki id as "id" (you passed: ${Object.keys(a || {}).join(', ') || 'nothing'})`);
+  return id;
+}
+
 async function readRepoReadme(dir) {
   for (const name of ['README.md', 'README.mdx', 'readme.md', 'Readme.md']) {
     try { return await fs.readFile(dir + '/' + name, 'utf8'); } catch { /* try next */ }
   }
   return '';
+}
+
+// Drop nav leaves whose page never landed (a writer failed), and any section
+// left empty, so the index never links to a missing page.
+function pruneNav(nodes, valid) {
+  const out = [];
+  for (const n of nodes || []) {
+    if (n.children && n.children.length) {
+      const kids = pruneNav(n.children, valid);
+      if (kids.length) out.push({ ...n, children: kids });
+      else if (n.slug && valid.has(n.slug)) out.push({ title: n.title, slug: n.slug });
+    } else if (n.slug && valid.has(n.slug)) {
+      out.push(n);
+    }
+  }
+  return out;
+}
+
+// Group stored pages into a category nav tree. Used when writers stored pages
+// but the lead never submitted a navigation (its final turn failed).
+function navFromPages(pages) {
+  const byCat = new Map();
+  for (const p of pages) {
+    const cat = (p.meta && p.meta.category) || 'Pages';
+    if (!byCat.has(cat)) byCat.set(cat, []);
+    byCat.get(cat).push({ title: (p.meta && p.meta.title) || p.slug, slug: p.slug });
+  }
+  return [...byCat.entries()].map(([title, children]) => ({ title, children }));
 }
 
 function inferRepoName(url) {
@@ -130,6 +173,7 @@ async function writePagesSync(wikiId, { dir, itemsToWrite, fullOutline, categori
 async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
   inflight.add(wikiId);
   resetReadStats(wikiId);
+  pagesWritten.set(wikiId, 0);
   const started = now();
   try {
     await store.appendLog(wikiId, `Starting generation for ${repoUrl} (model=${model})`);
@@ -139,6 +183,10 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     await fs.rm(dir, { recursive: true, force: true });
     const { commit, name } = await cloneRepo(worker, repoUrl, dir, ref);
     invalidateInventory(wikiId);
+    // Persist the cloned commit + name now so openwiki::write-page can build
+    // pinned GitHub blob URLs for each page's citations while writers run.
+    const base = await store.getWiki(wikiId);
+    if (base) await store.saveWiki(wikiId, { ...base, repo_name: name, commit, updated_at: now() });
 
     await setStatus(wikiId, { phase: 'inventorying', progress: 0.15, message: 'Reading source files', updated_at: now() });
     const inventory = await inventoryRepo(dir);
@@ -151,57 +199,51 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
       const docsIndex = await fetchDocsIndex(worker, { repoUrl, readme, repoDir: dir });
       if (docsIndex) { dHint = buildDocsHint(docsIndex); await store.appendLog(wikiId, `docs oracle: ${docsIndex.linkCount} topics (${docsIndex.source})`); }
     } catch { /* oracle is optional */ }
-    // Native path: ONE orchestrator agent explores, decides the pages, and
-    // writes each by spawning a page-writer sub-agent (harness::spawn) itself —
-    // the harness way. The harness parks the parent, runs the children, delivers
-    // results back, and the parent submits the assembled wiki; we just store it.
+    // Native path: ONE lead agent researches the repo, plans the pages, and
+    // spawns one writer sub-agent per page (harness::spawn) — the harness way.
+    // Each writer stores its OWN page via openwiki::write-page, so the lead only
+    // returns the summary + navigation; the pages are already on disk here.
     let pages = null; let navigation = []; let summary = ''; let categories = [];
-    // Live progress: the orchestrator returns everything only at the end, so
-    // stream per-page updates off the page-writer children's turn-completed
-    // events as they finish (restores the live UI the send-per-page path had).
+    // Live progress: writers store pages via openwiki::write-page (which streams
+    // the page + advances the bar). Spawns are only visible on turn-started, so
+    // subscribe that to stream the "spawned a writer" feed as the lead delegates.
     const orchRoot = wikiParentSession(name, wikiId);
-    let liveDone = 0;
     const offLive = turnbus.register(orchRoot, {
       onSpawn: (childId) => {
         pushProgress(wikiId, { kind: 'spawn', slug: String(childId).split('/').pop() || 'page' });
       },
-      onPage: (childId) => {
-        liveDone += 1;
-        const slug = String(childId).split('/').pop() || 'page';
-        pushProgress(wikiId, { kind: 'page', slug, title: slug });
-        setStatus(wikiId, { phase: 'generating', progress: Math.min(0.92, 0.35 + liveDone * 0.08), message: `Sub-agents wrote ${liveDone} page(s)`, pages_done: liveDone, updated_at: now() }).catch(() => {});
-      },
     });
+    let orch = null;
     try {
-      await setStatus(wikiId, { phase: 'generating', progress: 0.3, message: 'Agent exploring and spawning page-writers', updated_at: now() });
-      const orch = await runOrchestrator(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
-      pages = orch.pages; navigation = orch.navigation; summary = orch.summary;
-      categories = navigation.map((l1) => ({ id: l1.title, title: l1.title }));
-      await store.appendLog(wikiId, `Orchestrator returned ${pages.length} pages.`);
+      await setStatus(wikiId, { phase: 'generating', progress: 0.3, message: 'Agent researching and spawning writers', updated_at: now() });
+      orch = await runOrchestrator(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
     } catch (e) {
-      await store.appendLog(wikiId, `orchestrator fallback (${e?.message || e})`);
+      await store.appendLog(wikiId, `lead did not finish cleanly (${e?.message || e})`);
     } finally { offLive(); }
+    // The writers store pages directly, so use whatever landed even if the lead
+    // failed to submit its final nav (a large final turn can time out). Only fall
+    // back to the router plan when nothing was written at all.
+    const stored = await store.listPages(wikiId);
+    if (stored.length) {
+      navigation = (orch && Array.isArray(orch.navigation) && orch.navigation.length) ? orch.navigation : navFromPages(stored);
+      summary = (orch && orch.summary) || '';
+      // categories is derived below from the PRUNED navigation (post pruneNav),
+      // so it is intentionally not computed here.
+      pages = stored;
+      await store.appendLog(wikiId, `Using ${stored.length} writer-stored page(s)${orch ? '' : ' (lead did not submit nav; grouped by category)'}.`);
+    }
 
     if (pages) {
-      const invPaths = inventory.map((e) => e.relPath);
-      const total = pages.length || 1; let done = 0;
-      for (const p of pages) {
-        const slug = String(p.slug || '').trim() || slugify(p.title || 'page');
-        // The sub-agents return only markdown; recover the page's source files by
-        // matching real inventory paths that appear in it (Relevant Source Files
-        // section, Sources: lines, inline refs) so the right rail is populated.
-        const md = String(p.markdown || '');
-        const source_paths = invPaths.filter((ip) => md.includes(ip)).slice(0, 20);
-        const { markdown, frontmatter } = mapResult(
-          { title: p.title, markdown: md, citations: p.citations, status: 'current' },
-          { outlineItem: { slug, title: p.title, category: p.category, source_paths }, repoUrl, commit },
-        );
-        await store.savePage(wikiId, slug, markdown, frontmatter);
-        done += 1;
-        pushProgress(wikiId, { kind: 'page', slug, title: p.title || slug });
-        await setStatus(wikiId, { phase: 'generating', progress: 0.3 + 0.65 * (done / total), message: `Stored ${done}/${total} pages`, pages_done: done, pages_total: total, updated_at: now() });
-      }
-      await store.saveOutline(wikiId, { navigation, categories, items: pages.map((p) => ({ slug: p.slug, title: p.title, category: p.category, source_paths: [] })) });
+      // Pages are already stored by the writers; build the outline from what
+      // landed and prune the index so it never links to a page a writer failed to
+      // produce (with the write-page thin-guard, stored pages are all substantial).
+      const items = pages.map((p) => ({ slug: p.slug, title: p.meta?.title || p.slug, category: p.meta?.category || '', source_paths: p.meta?.source_paths || [] }));
+      const haveSlugs = new Set(items.map((i) => i.slug));
+      const missing = navSlugs(navigation).filter((s) => !haveSlugs.has(s));
+      if (missing.length) await store.appendLog(wikiId, `pruned ${missing.length} unwritten page(s) from the index: ${missing.join(', ')}`);
+      navigation = pruneNav(navigation, haveSlugs);
+      categories = navigation.map((l1) => ({ id: l1.title, title: l1.title }));
+      await store.saveOutline(wikiId, { navigation, categories, items });
     } else {
       // Fallback: two-phase plan + parallel writers (no harness model, or the
       // orchestrator failed). Keeps openwiki working without the agentic path.
@@ -375,24 +417,31 @@ worker.registerFunction(
 
 worker.registerFunction(
   'openwiki::pages',
-  async ({ id }) => ({ pages: (await store.listPages(id)).map((x) => ({ slug: x.slug, ...x.meta })) }),
-  { description: 'List all pages of a wiki.', request_format: S.PAGES_REQ, response_format: S.PAGES_RES },
+  async (a) => { const id = needId(a, 'openwiki::pages'); return { pages: (await store.listPages(id)).map((x) => ({ slug: x.slug, ...x.meta })) }; },
+  { description: 'List all pages of a wiki. Params: { id }.', request_format: S.PAGES_REQ, response_format: S.PAGES_RES },
 );
 
 worker.registerFunction(
   'openwiki::page',
-  async ({ id, slug }) => {
+  async (a) => {
+    const id = needId(a, 'openwiki::page');
+    const raw = a.slug || a.page || a.path || a.title;
+    if (!raw) throw err('openwiki/bad_request', 'openwiki::page requires a page "slug" (list them with openwiki::pages)');
+    const slug = slugify(String(raw));
     const p = await store.getPage(id, slug);
-    if (!p) throw err('openwiki/page_not_found', 'page not found');
+    if (!p) {
+      const have = (await store.listPages(id)).map((x) => x.slug);
+      throw err('openwiki/page_not_found', `page "${slug}" not found; available slugs: ${have.join(', ') || '(none)'}`);
+    }
     return { slug, ...p.meta, markdown: p.markdown };
   },
-  { description: 'Get a single wiki page (markdown body + metadata).', request_format: S.PAGE_REQ, response_format: S.PAGE_RES },
+  { description: 'Get a single wiki page (markdown body + metadata). Params: { id, slug } (slug from openwiki::pages).', request_format: S.PAGE_REQ, response_format: S.PAGE_RES },
 );
 
 worker.registerFunction(
   'openwiki::search',
-  async ({ id, q }) => ({ results: await searchPages(id, q || '') }),
-  { description: 'Search pages of a wiki by keyword.', request_format: S.SEARCH_REQ, response_format: S.SEARCH_RES },
+  async (a) => { const id = needId(a, 'openwiki::search'); return { results: await searchPages(id, a.q || a.query || '') }; },
+  { description: 'Search pages of a wiki by keyword. Params: { id, q }.', request_format: S.SEARCH_REQ, response_format: S.SEARCH_RES },
 );
 
 worker.registerFunction(
@@ -433,20 +482,77 @@ worker.registerFunction(
 // frame the panel shows as the current line ("reading src/queue.js").
 worker.registerFunction(
   'openwiki::src::read',
-  async ({ id, path, from, to }) => { pushProgress(id, { kind: 'activity', op: 'read', path }); return srcRead(id, path, from, to); },
-  { description: "Read a file (optional 1-indexed line window) from a wiki's cloned repo.", request_format: S.SRC_READ_REQ, response_format: S.SRC_READ_RES },
+  async (a) => {
+    const id = needId(a, 'openwiki::src::read');
+    const path = a.path || a.file || a.filename;
+    if (!path) throw err('openwiki/bad_request', 'openwiki::src::read requires a file "path"');
+    pushProgress(id, { kind: 'activity', op: 'read', path });
+    return srcRead(id, path, a.from, a.to);
+  },
+  { description: "Read a file (optional 1-indexed line window) from a wiki's cloned repo. Params: { id, path, from?, to? }.", request_format: S.SRC_READ_REQ, response_format: S.SRC_READ_RES },
 );
 
 worker.registerFunction(
   'openwiki::src::list',
-  async ({ id, dir }) => { pushProgress(id, { kind: 'activity', op: 'list', path: dir || '.' }); return srcList(id, dir); },
-  { description: "List files (path, language, priority) in a wiki's cloned repo.", request_format: S.SRC_LIST_REQ, response_format: S.SRC_LIST_RES },
+  async (a) => { const id = needId(a, 'openwiki::src::list'); const dir = a.dir || a.path || ''; pushProgress(id, { kind: 'activity', op: 'list', path: dir || '.' }); return srcList(id, dir); },
+  { description: "List files (path, language, priority) in a wiki's cloned repo. Params: { id, dir? }.", request_format: S.SRC_LIST_REQ, response_format: S.SRC_LIST_RES },
 );
 
 worker.registerFunction(
   'openwiki::src::grep',
-  async ({ id, pattern, max }) => { pushProgress(id, { kind: 'activity', op: 'grep', path: pattern }); return srcGrep(id, pattern, max); },
-  { description: "Search file contents in a wiki's cloned repo.", request_format: S.SRC_GREP_REQ, response_format: S.SRC_GREP_RES },
+  async (a) => {
+    const id = needId(a, 'openwiki::src::grep');
+    const pattern = a.pattern || a.query || a.q;
+    if (!pattern) throw err('openwiki/bad_request', 'openwiki::src::grep requires a "pattern"');
+    pushProgress(id, { kind: 'activity', op: 'grep', path: pattern });
+    return srcGrep(id, pattern, a.max);
+  },
+  { description: "Search file contents in a wiki's cloned repo. Params: { id, pattern, max? }.", request_format: S.SRC_GREP_REQ, response_format: S.SRC_GREP_RES },
+);
+
+// A page-writer sub-agent stores its finished page here directly, so the parent
+// never collects the markdown (that assembly was the bottleneck). Guarded to a
+// wiki that is actively generating; the concurrent index write is serialized in
+// store.savePage. Streams a live page event.
+worker.registerFunction(
+  'openwiki::write-page',
+  async ({ id, slug, title, category, markdown, source_paths, citations }) => {
+    const meta = await store.getWiki(id);
+    if (!meta || !meta.generating) throw err('openwiki/not_generating', 'wiki is not generating; write-page refused');
+    const s = slugify(slug || title || 'page');
+    // Reject thin/empty pages so an under-delivering writer cannot store a blank
+    // page (that landed empty "overview"/"installation" pages in the index). The
+    // writer sees this error and can retry with real content within its turns.
+    const body = String(markdown || '').trim();
+    if (body.length < 250) throw err('openwiki/thin_page', `page "${s}" is too thin (${body.length} chars). Write a substantial, source-grounded page (at least 3 "##" sections and 400+ words) before calling write-page.`);
+    // Build the References rail: turn the writer's citations (and any bare
+    // source_paths) into pinned GitHub blob URLs at the cloned commit, so the UI
+    // renders a References list and makes each source file a clickable deep-link.
+    const cited = (Array.isArray(citations) ? citations : []).filter((c) => c && c.path);
+    const paths = [...new Set(cited.map((c) => c.path).concat(source_paths || []))];
+    const withUrl = cited.map((c) => {
+      const url = citationUrl(meta.repo_url, meta.commit, c.path, c.start_line, c.end_line);
+      return { path: c.path, ...(c.start_line ? { start_line: c.start_line } : {}), ...(c.end_line ? { end_line: c.end_line } : {}), ...(c.note ? { note: c.note } : {}), ...(url ? { url } : {}) };
+    });
+    for (const p of paths) {
+      if (withUrl.some((c) => c.path === p)) continue;
+      const url = citationUrl(meta.repo_url, meta.commit, p);
+      withUrl.push({ path: p, ...(url ? { url } : {}) });
+    }
+    const frontmatter = {
+      title: title || s, slug: s, category: category || '', source_paths: paths,
+      citations: withUrl,
+      last_updated: now(), confidence: 'medium', status: 'current', generator: 'harness',
+    };
+    await store.savePage(id, s, body, frontmatter);
+    const n = (pagesWritten.get(id) || 0) + 1;
+    pagesWritten.set(id, n);
+    await store.appendLog(id, `Wrote ${s} — ${title || s}`);
+    pushProgress(id, { kind: 'page', slug: s, title: title || s });
+    await setStatus(id, { phase: 'generating', progress: Math.min(0.92, 0.35 + n * 0.06), message: `Writers stored ${n} page(s)`, pages_done: n, updated_at: now() });
+    return { slug: s, ok: true };
+  },
+  { description: 'A page-writer sub-agent stores its finished page (markdown + metadata) for a generating wiki.', request_format: S.WRITE_PAGE_REQ, response_format: S.WRITE_PAGE_RES },
 );
 
 // ---------- Ask / diagram / export ----------
