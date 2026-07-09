@@ -3,10 +3,11 @@
 An iii worker that builds and maintains a source-grounded, interlinked markdown
 wiki for a code repository, and serves a browser UI to read and search it.
 
-Point it at a git repo. A language model reads the source, plans a categorized
-outline, writes one page per topic with file citations, and keeps the wiki
-current from git diffs. Routing, scheduling, and the HTTP surface run on iii
-primitives; the model is a wiki maintainer, not a chatbot.
+Point it at a git repo. A harness agent reads the source, plans a hierarchical
+index, and delegates one writer sub-agent per page; each writer reads its files
+and stores a cited page. Incremental refresh keeps the wiki current from git
+diffs. Orchestration, model routing, scheduling, and the HTTP surface all run on
+iii primitives; the agent is a wiki maintainer, not a chatbot.
 
 Not published to the iii registry yet. Run it locally against a running engine.
 
@@ -15,13 +16,18 @@ Not published to the iii registry yet. Run it locally against a running engine.
 openwiki is a thin orchestrator: it calls other iii workers over the bus instead
 of embedding their logic, and degrades gracefully when a worker is absent.
 
-**Page generation is tiered.** For each page it tries, in order:
+**Generation is agent-driven.** One lead agent runs on the `harness`: it explores
+the clone through openwiki's scoped readers (`openwiki::src::read` / `src::list` /
+`src::grep`), plans the wiki's index, and calls `harness::spawn` itself to launch
+one writer sub-agent per page in parallel. Each writer reads its own files and
+stores its finished page directly with `openwiki::write-page`, so the lead never
+collects page bodies. Pages stream into the UI as each writer lands, and the lead
+submits only the table of contents.
 
-1. `harness` — an agent explores the clone through openwiki's scoped readers
-   (`openwiki::src::read` / `src::list` / `src::grep`) and returns a page with
-   line-level citations. Best quality.
-2. `llm-router` — one `router::complete` over the pre-selected source files.
-3. heuristic — no LLM; builds a serviceable page from file headers. Always works.
+**Fallbacks keep it working without the full stack.** If the harness or a model is
+unavailable, openwiki drops to a two-phase plan plus bounded-parallel writers: one
+`router::complete` per page (`llm-router`), and below that a heuristic tier that
+builds a serviceable page from file headers with no model at all.
 
 Git runs through `shell` (`shell::exec`) when present, otherwise a local `git`
 fallback. Persistence is iii-state (engine builtin). The engine serves the UI +
@@ -36,19 +42,19 @@ One command installs everything openwiki composes:
 iii worker add harness console
 ```
 
-`harness` pulls its whole stack transitively — `llm-router`, `session-manager`,
+`harness` pulls its whole stack transitively (`llm-router`, `session-manager`,
 `context-manager`, `shell`, the model providers, `iii-state`, `iii-cron`, and
-`web` — so you never list them yourself. `console` adds the trace + chat UI for
+`web`), so you never list them yourself. `console` adds the trace + chat UI for
 watching generation live. The engine serves openwiki's browser UI and JSON API
-directly (the `http` trigger type is built in — no separate http worker).
+directly (the `http` trigger type is built in, no separate http worker).
 
 openwiki degrades gracefully when a worker is absent:
 
 | Present | Pages are |
 |---|---|
-| `harness` + a configured provider | agent-explored, line-cited (best) |
+| `harness` + a configured provider | agent-orchestrated, line-cited (best) |
 | `llm-router` only | model-written from pre-selected files |
-| neither | heuristic — built from file headers, always works |
+| neither | heuristic, built from file headers, always works |
 
 The provider credential lives in the `llm-router` / provider config, never in
 openwiki. The default model is `claude-haiku-4-5-20251001`; the browser UI's
@@ -145,12 +151,14 @@ still produces a browsable wiki.
 - `openwiki::search { id, q }` keyword search over a wiki.
 - `openwiki::refresh { id }` pull and regenerate only the pages whose source changed (incremental).
 - `openwiki::lint { id }` validate every page citation against the clone; flag thin pages.
+- `openwiki::delete { id }` delete a wiki and all its pages (also available as `DELETE /openwiki/api/wikis/:id`, and as the per-wiki remove control in the UI).
 
-Scoped readers the harness calls to explore a clone (jailed to one wiki's clone):
+Agent-facing functions the harness calls during generation (jailed to one wiki's clone):
 
 - `openwiki::src::read { id, path, from?, to? }` read a file, optionally a line window.
 - `openwiki::src::list { id, dir? }` list files (path, language, priority).
 - `openwiki::src::grep { id, pattern, max? }` search file contents.
+- `openwiki::write-page { id, slug, title?, category?, markdown, source_paths?, citations? }` a writer sub-agent stores its finished page; openwiki turns its citations into pinned-commit source links and rejects a page that comes back too thin.
 
 Answer, visualize, export:
 
@@ -163,23 +171,32 @@ MCP: openwiki registers `openwiki::read-wiki-structure`, `read-wiki-contents`, a
 etc.) so any MCP client can browse and query a wiki.
 
 HTTP triggers mirror the read/generate functions under `/openwiki/api/*`, and
-`/openwiki` serves the UI — page citations deep-link to source at the pinned
+`/openwiki` serves the UI. Page citations deep-link to source at the pinned
 commit, diagrams render inline in the page, generation progress streams live
 (SSE), and an **Ask** panel answers cited questions.
 
 ## How generation works
 
-1. Clone the repo (via the `shell` worker) and inventory its files.
-2. The harness explores the clone and plans a categorized, nested outline. The
-   page budget scales with repo size (roughly 3-6 pages for a tiny repo up to
-   ~48 for a large or doc-heavy one) and follows the repo's own docs index
-   (`llms.txt` / a `docs/` tree) when present.
-3. Page writers run as named child sessions in parallel; each reads the relevant
-   source files and writes markdown with `[[wiki-links]]` and `path:line`
-   citations. Progress streams to the UI as each page lands.
-4. Pages are stored in iii-state behind a lightweight page index (so large wikis
-   never enumerate page bodies), and the last commit + a page-set content hash
-   are recorded.
+1. Clone the repo (via the `shell` worker), inventory its files, and record the
+   commit so citations can deep-link to the exact source.
+2. Start one lead agent on the harness. It explores the clone with the scoped
+   readers and plans a hierarchical, reading-ordered index (Overview first, API
+   Reference and Advanced later). The model decides how many pages and sections
+   the repo needs, from a handful for a tiny repo up to a few dozen for a large
+   one, and follows the repo's own docs index (`llms.txt` / a `docs/` tree) when
+   present. There is no fixed category template.
+3. The lead calls `harness::spawn` to launch one writer sub-agent per page, in
+   parallel. Each writer reads its focused files and writes a substantial page
+   (sections, a Mermaid diagram where it helps, an API-reference table where the
+   page documents an API, and `path:line` citations), then stores it with
+   `openwiki::write-page`. openwiki turns each citation into a pinned-commit
+   source link and rejects a page that comes back too thin.
+4. Pages stream to the UI as they land. The lead submits the summary and the
+   table of contents; openwiki prunes the index to the pages that were actually
+   written, records a page-set content hash, and marks the wiki ready.
+
+Pages are stored in iii-state behind a lightweight page index, so large wikis
+never enumerate page bodies.
 
 ## How refresh works
 
@@ -189,7 +206,7 @@ commit, diagrams render inline in the page, generation progress streams live
 2. `git diff` the recorded commit against the new one for changed paths.
 3. Map changed paths to affected pages through the file→page index; regenerate
    only those pages.
-4. Gate on a content hash so an identical result does not churn the wiki — no
+4. Gate on a content hash so an identical result does not churn the wiki, so no
    empty updates on a nightly cron.
 
 ## Configuration
