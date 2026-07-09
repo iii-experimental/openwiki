@@ -16,14 +16,28 @@ const active = new Map(); // root session id -> collector
 //   onPlan(result)            called once when the root/plan turn completes
 //   onPage(childId, result)   called per page child completion (ok)
 //   onPageError(childId, err) called per page child that failed/cancelled
-export function register(rootSessionId, { onPlan, onPage, onPageError } = {}) {
-  active.set(rootSessionId, { onPlan, onPage, onPageError });
+//   onSpawn(childId)          called when a page-writer sub-agent STARTS
+export function register(rootSessionId, { onPlan, onPage, onPageError, onSpawn } = {}) {
+  active.set(rootSessionId, { onPlan, onPage, onPageError, onSpawn });
   return () => active.delete(rootSessionId);
 }
 
 export function unregister(rootSessionId) { active.delete(rootSessionId); }
 
 export function isActive(rootSessionId) { return active.has(rootSessionId); }
+
+// Route a harness::turn-started event: a child sub-agent under a root we own
+// just began, so signal its spawn (for live progress). The parent's own start
+// (session_id === root, no parent) is ignored.
+export function deliverStarted(evt) {
+  if (!evt || typeof evt !== 'object') return false;
+  const pid = evt.parent_session_id;
+  if (pid && active.has(pid)) {
+    try { active.get(pid).onSpawn?.(evt.session_id); } catch { /* isolate */ }
+    return true;
+  }
+  return false;
+}
 
 // Route one harness::turn-completed event payload to its generation, if any.
 // Event shape (harness events.rs): { session_id, turn_id, status, result?,

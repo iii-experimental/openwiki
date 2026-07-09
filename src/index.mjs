@@ -162,6 +162,9 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     const orchRoot = wikiParentSession(name, wikiId);
     let liveDone = 0;
     const offLive = turnbus.register(orchRoot, {
+      onSpawn: (childId) => {
+        pushProgress(wikiId, { kind: 'spawn', slug: String(childId).split('/').pop() || 'page' });
+      },
       onPage: (childId) => {
         liveDone += 1;
         const slug = String(childId).split('/').pop() || 'page';
@@ -666,10 +669,17 @@ worker.registerFunction('openwiki::on-turn-completed', async (evt) => {
   return null;
 }, { description: 'Internal: routes harness::turn-completed events to the active generation.', request_format: { type: 'object', additionalProperties: true, properties: {} }, response_format: { type: 'null' } });
 
+// turn-started drives the "spawned page-writer" line in the live feed.
+worker.registerFunction('openwiki::on-turn-started', async (evt) => {
+  try { turnbus.deliverStarted(evt?.payload || evt); } catch (e) { console.warn('[openwiki] turn-started route failed', e?.message || e); }
+  return null;
+}, { description: 'Internal: routes harness::turn-started events (sub-agent spawns) to the active generation.', request_format: { type: 'object', additionalProperties: true, properties: {} }, response_format: { type: 'null' } });
+
 Promise.resolve()
   .then(() => worker.registerTrigger({ type: 'harness::turn-completed', function_id: 'openwiki::on-turn-completed', config: {} }))
-  .then(() => { console.log('[openwiki] subscribed to harness::turn-completed (real-time page collection)'); })
-  .catch((e) => console.warn('[openwiki] turn-completed subscribe failed; using synchronous fallback:', e?.message || e));
+  .then(() => worker.registerTrigger({ type: 'harness::turn-started', function_id: 'openwiki::on-turn-started', config: {} }))
+  .then(() => { console.log('[openwiki] subscribed to harness turn events (real-time collection + spawn feed)'); })
+  .catch((e) => console.warn('[openwiki] turn-event subscribe failed; using synchronous fallback:', e?.message || e));
 
 // Configuration: register the schema, load the stored value, and hot-reload on
 // change. Runs off the boot path so it never delays function registration.

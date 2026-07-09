@@ -231,6 +231,13 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .owgen .stage .pct{margin-left:auto;color:var(--ink-ghost);font-variant-numeric:tabular-nums}
   .owgen .working{color:var(--ink-ghost);font-size:12.5px}
   .owgen .lastpage{font-size:13px;line-height:1.7;color:var(--text-dim);font-style:italic}
+  .owgen .owfeed{border-top:1px solid var(--rule-2);margin-top:6px;padding-top:8px;
+    max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.5}
+  .owgen .feedln{color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .owgen .feedln.hi{color:var(--accent)}
+  .owgen .feedln .fg{color:var(--ink-ghost);display:inline-block;width:12px}
+  .owgen .feedln.hi .fg{color:var(--accent)}
 
   .phase{font-size:11px;color:var(--accent);text-transform:lowercase;letter-spacing:.04em;margin-top:2px}
   .phase.error{color:var(--danger)}
@@ -739,16 +746,31 @@ export const INDEX_HTML = String.raw`<!doctype html>
       if (es) {
         const stop = () => { try { es.close(); } catch (_) { /* ignore */ } state.pollTimers.delete(wid); };
         state.pollTimers.set(wid, { stop });
+        const pushFeed = (g, op, text) => {
+          if (!g.feed) g.feed = [];
+          g.feed.push({ op, text });
+          if (g.feed.length > 40) g.feed.shift();
+        };
         es.onmessage = (m) => {
           let evt; try { evt = JSON.parse(m.data); } catch (_) { return; }
           if (evt.kind === 'page') {
             const g = cur(); g.lastPage = evt.title || evt.slug; g.message = 'wrote ' + (evt.title || evt.slug);
+            pushFeed(g, 'page', 'wrote page: ' + (evt.title || evt.slug));
+            state.generating.set(wid, g);
+            if (wid === state.currentWikiId) renderMainProgress(g);
+            return;
+          }
+          if (evt.kind === 'spawn') {
+            const g = cur();
+            pushFeed(g, 'spawn', 'spawned page-writer: ' + (evt.slug || evt.title || ''));
             state.generating.set(wid, g);
             if (wid === state.currentWikiId) renderMainProgress(g);
             return;
           }
           if (evt.kind === 'activity') {
-            const g = cur(); g.activity = evt.op + ' ' + (evt.path || '');
+            const g = cur(); const line = evt.op + (evt.path ? ' ' + evt.path : '');
+            g.activity = line;
+            pushFeed(g, evt.op, line);
             state.generating.set(wid, g);
             if (wid === state.currentWikiId) renderMainProgress(g);
             return;
@@ -998,8 +1020,14 @@ export const INDEX_HTML = String.raw`<!doctype html>
       : (g.activity
         ? '<div class="working"><span class="glyph" style="color:var(--accent)">→</span> <span class="shimmer">' + escapeHtml(g.activity) + '</span></div>'
         : '<div class="working pulse-op">· working…</div>');
-    const lastPage = (!err && g.lastPage)
-      ? '<div class="lastpage"><span class="shimmer">' + escapeHtml(g.lastPage) + '</span><span class="caret"></span></div>' : '';
+    // Live activity feed: every file read, sub-agent spawn, and page written,
+    // streamed from the SSE events as they happen.
+    const feedGlyph = { read: '→', list: '☰', grep: '⌕', spawn: '↳', page: '✓' };
+    const feed = (!err && g.feed && g.feed.length)
+      ? '<div class="owfeed">' + g.feed.slice(-16).map((f) => {
+        const hi = (f.op === 'spawn' || f.op === 'page') ? ' hi' : '';
+        return '<div class="feedln' + hi + '"><span class="fg">' + (feedGlyph[f.op] || '·') + '</span> ' + escapeHtml(f.text) + '</div>';
+      }).join('') + '</div>' : '';
     const failBar = err ? '<i class="fail" style="width:' + Math.max(pct, 6) + '%"></i>' : '';
     $('main').innerHTML =
       '<div class="hero">' +
@@ -1009,8 +1037,9 @@ export const INDEX_HTML = String.raw`<!doctype html>
           '<div class="body">' +
             '<div class="owbar">' + (err ? failBar : '<i style="width:' + pct + '%"></i>') + '</div>' +
             '<div class="barlabel"><span>' + escapeHtml(g.phase || 'working') + '</span><span>' + pct + '%</span></div>' +
-            '<div class="console">' + stages + working + '</div>' +
-            lastPage +
+            '<div class="console">' + stages + '</div>' +
+            feed +
+            working +
           '</div>' +
         '</div>' +
       '</div>';
