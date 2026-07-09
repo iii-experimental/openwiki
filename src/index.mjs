@@ -13,7 +13,7 @@ import * as store from './lib/store.mjs';
 import { searchPages } from './lib/search.mjs';
 import { planWiki } from './lib/generate.mjs';
 import { generatePageAny, planViaHarness } from './lib/harness.mjs';
-import { resolveModel } from './lib/model.mjs';
+import { resolveModel, listModels } from './lib/model.mjs';
 import { srcRead, srcList, srcGrep, invalidateInventory, getReadStats, resetReadStats } from './lib/src.mjs';
 import { lintWiki } from './lib/lint.mjs';
 import { askWiki } from './lib/ask.mjs';
@@ -29,13 +29,13 @@ import * as S from './lib/schemas.mjs';
 const III_URL = process.env.III_URL || process.env.III_ENGINE_URL || 'ws://localhost:49134';
 let cfg = configuration.defaults();
 
-const client = registerWorker(III_URL, {
+const worker = registerWorker(III_URL, {
   workerName: 'openwiki',
   workerDescription:
     'Source-grounded wiki maintainer: generates and maintains a categorized, interlinked markdown wiki for any git repository, and serves a browser UI + HTTP API to browse and search it.',
 });
 
-store.setClient(client);
+store.setWorker(worker);
 store.ensureRoot().catch((e) => console.error('[openwiki] ensureRoot', e));
 
 const now = () => new Date().toISOString();
@@ -77,7 +77,7 @@ async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, 
   const allSlugs = fullOutline.map((o) => o.slug);
   const allTitles = fullOutline.map((o) => o.title);
   const total = itemsToWrite.length || 1;
-  const resolved = await resolveModel(client, model);
+  const resolved = await resolveModel(worker, model);
   const step = Math.max(1, Number(cfg.max_parallel) || 1);
   let done = 0;
 
@@ -93,7 +93,7 @@ async function writePages(wikiId, { dir, itemsToWrite, fullOutline, categories, 
         }
       }
       try {
-        const { markdown, frontmatter } = await generatePageAny(client, {
+        const { markdown, frontmatter } = await generatePageAny(worker, {
           wikiId, outlineItem: item, sourceReads: reads, allSlugs, allTitles, categories,
           repoName, repoUrl, commit, model: resolved.model || model, provider: resolved.provider,
           useHarness: resolved.resolved, parentSessionId,
@@ -131,7 +131,7 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
 
     const dir = store.repoDir(wikiId);
     await fs.rm(dir, { recursive: true, force: true });
-    const { commit, name } = await cloneRepo(client, repoUrl, dir, ref);
+    const { commit, name } = await cloneRepo(worker, repoUrl, dir, ref);
     invalidateInventory(wikiId);
 
     await setStatus(wikiId, { phase: 'inventorying', progress: 0.15, message: 'Reading source files', updated_at: now() });
@@ -142,16 +142,16 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     let dHint = '';
     try {
       const readme = await readRepoReadme(dir);
-      const docsIndex = await fetchDocsIndex(client, { repoUrl, readme, repoDir: dir });
+      const docsIndex = await fetchDocsIndex(worker, { repoUrl, readme, repoDir: dir });
       if (docsIndex) { dHint = buildDocsHint(docsIndex); await store.appendLog(wikiId, `docs oracle: ${docsIndex.linkCount} topics (${docsIndex.source})`); }
     } catch { /* oracle is optional */ }
     let planned = null;
     try {
-      planned = await planViaHarness(client, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
+      planned = await planViaHarness(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
     } catch (e) {
       await store.appendLog(wikiId, `harness plan fallback (${e?.message || e})`);
     }
-    if (!planned) planned = await planWiki(client, { inventory, repoName: name, repoUrl, model, repoDir: dir, steer });
+    if (!planned) planned = await planWiki(worker, { inventory, repoName: name, repoUrl, model, repoDir: dir, steer });
     const parentSessionId = planned && planned.sessionId;
     const norm = normalizePlan(planned);
     const summary = norm.summary;
@@ -245,13 +245,13 @@ async function refreshWiki(wikiId) {
   // Ensure a clone exists and is current.
   const stat = await fs.stat(dir).catch(() => null);
   if (stat && stat.isDirectory()) {
-    newCommit = await gitPull(client, dir);
+    newCommit = await gitPull(worker, dir);
     if (!newCommit) {
       await fs.rm(dir, { recursive: true, force: true });
-      ({ commit: newCommit } = await cloneRepo(client, meta.repo_url, dir, meta.ref));
+      ({ commit: newCommit } = await cloneRepo(worker, meta.repo_url, dir, meta.ref));
     }
   } else {
-    ({ commit: newCommit } = await cloneRepo(client, meta.repo_url, dir, meta.ref));
+    ({ commit: newCommit } = await cloneRepo(worker, meta.repo_url, dir, meta.ref));
   }
   invalidateInventory(wikiId);
 
@@ -270,7 +270,7 @@ async function refreshWiki(wikiId) {
 
   // Diff prev..new, map changed files to affected pages, regenerate only those.
   let changed = [];
-  try { changed = await gitDiff(client, dir, prevCommit, newCommit); }
+  try { changed = await gitDiff(worker, dir, prevCommit, newCommit); }
   catch (e) { await store.appendLog(wikiId, `refresh diff failed: ${e?.message || e}`); }
   const changedPaths = changed.map((c) => c.path);
   const affected = await store.pagesForPaths(wikiId, changedPaths);
@@ -290,7 +290,7 @@ async function refreshWiki(wikiId) {
 
 // ---------- iii functions ----------
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::generate',
   async ({ repo_url, model, ref, steer }) => startWiki(repo_url, model, ref, steer),
   {
@@ -300,19 +300,25 @@ client.registerFunction(
   },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::status',
   async ({ id }) => (await store.getStatus(id)) || { phase: 'unknown', progress: 0, updated_at: now() },
   { description: 'Poll generation status for a wiki id.', request_format: S.STATUS_REQ, response_format: S.STATUS_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::wikis',
   async () => ({ wikis: await store.listWikis() }),
   { description: 'List all wikis generated by this worker.', request_format: S.WIKIS_REQ, response_format: S.WIKIS_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
+  'openwiki::models',
+  async () => ({ models: await listModels(worker), default_model: cfg.model }),
+  { description: "Models available via llm-router (for the UI's model picker), plus the configured default. Empty when no provider is configured.", request_format: S.MODELS_REQ, response_format: S.MODELS_RES },
+);
+
+worker.registerFunction(
   'openwiki::wiki',
   async ({ id }) => {
     const m = await store.getWiki(id);
@@ -322,13 +328,13 @@ client.registerFunction(
   { description: "Fetch a single wiki's metadata.", request_format: S.WIKI_REQ, response_format: S.WIKI_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::pages',
   async ({ id }) => ({ pages: (await store.listPages(id)).map((x) => ({ slug: x.slug, ...x.meta })) }),
   { description: 'List all pages of a wiki.', request_format: S.PAGES_REQ, response_format: S.PAGES_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::page',
   async ({ id, slug }) => {
     const p = await store.getPage(id, slug);
@@ -338,25 +344,25 @@ client.registerFunction(
   { description: 'Get a single wiki page (markdown body + metadata).', request_format: S.PAGE_REQ, response_format: S.PAGE_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::search',
   async ({ id, q }) => ({ results: await searchPages(id, q || '') }),
   { description: 'Search pages of a wiki by keyword.', request_format: S.SEARCH_REQ, response_format: S.SEARCH_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::refresh',
   async ({ id }) => refreshWiki(id),
   { description: 'Pull the repo and regenerate only the pages whose source changed (incremental).', request_format: S.WIKI_REQ, response_format: S.REFRESH_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::lint',
   async ({ id }) => lintWiki(id),
   { description: 'Validate every page citation against the clone and flag thin pages.', request_format: S.LINT_REQ, response_format: S.LINT_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::gen-stats',
   async ({ id }) => {
     const reads = getReadStats(id) || {};
@@ -380,19 +386,19 @@ client.registerFunction(
 // (one long opaque plan turn) there is no page progress, so without this the UI
 // sits static and reads as frozen. Each read/list/grep pushes a cheap activity
 // frame the panel shows as the current line ("reading src/queue.js").
-client.registerFunction(
+worker.registerFunction(
   'openwiki::src::read',
   async ({ id, path, from, to }) => { pushProgress(id, { kind: 'activity', op: 'read', path }); return srcRead(id, path, from, to); },
   { description: "Read a file (optional 1-indexed line window) from a wiki's cloned repo.", request_format: S.SRC_READ_REQ, response_format: S.SRC_READ_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::src::list',
   async ({ id, dir }) => { pushProgress(id, { kind: 'activity', op: 'list', path: dir || '.' }); return srcList(id, dir); },
   { description: "List files (path, language, priority) in a wiki's cloned repo.", request_format: S.SRC_LIST_REQ, response_format: S.SRC_LIST_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::src::grep',
   async ({ id, pattern, max }) => { pushProgress(id, { kind: 'activity', op: 'grep', path: pattern }); return srcGrep(id, pattern, max); },
   { description: "Search file contents in a wiki's cloned repo.", request_format: S.SRC_GREP_REQ, response_format: S.SRC_GREP_RES },
@@ -400,21 +406,21 @@ client.registerFunction(
 
 // ---------- Ask / diagram / export ----------
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::ask',
-  async ({ id, q, mode, file_answer, model }) => askWiki(client, { id, q, mode, file_answer, model }),
+  async ({ id, q, mode, file_answer, model }) => askWiki(worker, { id, q, mode, file_answer, model }),
   { description: 'Ask a question about a wiki; returns a cited answer. mode=fast (router) or deep (harness).', request_format: S.ASK_REQ, response_format: S.ASK_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::diagram',
-  async ({ id, kind }) => makeDiagram(client, { id, kind }),
+  async ({ id, kind }) => makeDiagram(worker, { id, kind }),
   { description: 'Generate a Mermaid diagram (architecture|dataflow|deps) of a wiki.', request_format: S.DIAGRAM_REQ, response_format: S.DIAGRAM_RES },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::export-agents-md',
-  async ({ id, targets, base_url }) => exportAgentsMd(client, { id, targets, baseUrl: base_url }),
+  async ({ id, targets, base_url }) => exportAgentsMd(worker, { id, targets, baseUrl: base_url }),
   { description: 'Build the AGENTS.md/CLAUDE.md pointer block for a wiki.', request_format: S.EXPORT_AGENTS_REQ, response_format: S.EXPORT_AGENTS_RES },
 );
 
@@ -422,7 +428,7 @@ client.registerFunction(
 
 const MCP_EXPOSE = { mcp: { expose: true } };
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::read-wiki-structure',
   async ({ id }) => {
     const m = await store.getWiki(id);
@@ -433,7 +439,7 @@ client.registerFunction(
   { description: "MCP: list a wiki's structure (categories + pages).", request_format: S.WIKI_REQ, response_format: S.MCP_STRUCTURE_RES, metadata: MCP_EXPOSE },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::read-wiki-contents',
   async ({ id, slug }) => {
     const p = await store.getPage(id, slug);
@@ -443,9 +449,9 @@ client.registerFunction(
   { description: 'MCP: read one wiki page (markdown + metadata).', request_format: S.PAGE_REQ, response_format: S.PAGE_RES, metadata: MCP_EXPOSE },
 );
 
-client.registerFunction(
+worker.registerFunction(
   'openwiki::ask-question',
-  async ({ id, q }) => askWiki(client, { id, q, mode: 'fast' }),
+  async ({ id, q }) => askWiki(worker, { id, q, mode: 'fast' }),
   { description: 'MCP: ask a question about a wiki; returns a cited answer.', request_format: S.SEARCH_REQ, response_format: S.ASK_RES, metadata: MCP_EXPOSE },
 );
 
@@ -487,49 +493,51 @@ function parseBody(body) {
   return {};
 }
 
-client.registerFunction('openwiki::http::ui', async () => htmlResponse(200, INDEX_HTML), HTTP_META('HTTP: serve the OpenWiki browser UI.'));
+worker.registerFunction('openwiki::http::ui', async () => htmlResponse(200, INDEX_HTML), HTTP_META('HTTP: serve the OpenWiki browser UI.'));
 
-client.registerFunction('openwiki::http::wikis-list', async () => jsonResponse(200, await store.listWikis()), HTTP_META('HTTP GET /openwiki/api/wikis'));
+worker.registerFunction('openwiki::http::wikis-list', async () => jsonResponse(200, await store.listWikis()), HTTP_META('HTTP GET /openwiki/api/wikis'));
 
-client.registerFunction('openwiki::http::wikis-create', async ({ body }) => {
+worker.registerFunction('openwiki::http::models', async () => jsonResponse(200, { models: await listModels(worker), default_model: cfg.model }), HTTP_META('HTTP GET /openwiki/api/models'));
+
+worker.registerFunction('openwiki::http::wikis-create', async ({ body }) => {
   const payload = parseBody(body);
   if (!payload.repo_url) return jsonResponse(400, { error: 'repo_url required' });
   const { wiki_id, status } = await startWiki(payload.repo_url, payload.model, payload.ref, payload.steer);
   return jsonResponse(202, { wiki_id, status });
 }, HTTP_META('HTTP POST /openwiki/api/wikis'));
 
-client.registerFunction('openwiki::http::wiki-get', async ({ path_params }) => {
+worker.registerFunction('openwiki::http::wiki-get', async ({ path_params }) => {
   const m = await store.getWiki(path_params?.id);
   return m ? jsonResponse(200, m) : jsonResponse(404, { error: 'not found' });
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id'));
 
-client.registerFunction('openwiki::http::wiki-status', async ({ path_params }) => {
+worker.registerFunction('openwiki::http::wiki-status', async ({ path_params }) => {
   const s = await store.getStatus(path_params?.id);
   return jsonResponse(200, s || { phase: 'unknown', progress: 0, updated_at: now() });
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id/status'));
 
-client.registerFunction('openwiki::http::pages-list', async ({ path_params }) => {
+worker.registerFunction('openwiki::http::pages-list', async ({ path_params }) => {
   const items = await store.listPages(path_params?.id);
   return jsonResponse(200, items.map((x) => ({ slug: x.slug, ...x.meta })));
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id/pages'));
 
-client.registerFunction('openwiki::http::page-get', async ({ path_params }) => {
+worker.registerFunction('openwiki::http::page-get', async ({ path_params }) => {
   const p = await store.getPage(path_params?.id, path_params?.slug);
   return p ? jsonResponse(200, { slug: path_params.slug, ...p.meta, markdown: p.markdown }) : jsonResponse(404, { error: 'not found' });
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id/pages/:slug'));
 
-client.registerFunction('openwiki::http::search', async ({ path_params, query_params }) => {
+worker.registerFunction('openwiki::http::search', async ({ path_params, query_params }) => {
   const q = query_params?.q || '';
   return jsonResponse(200, await searchPages(path_params?.id, q));
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id/search?q='));
 
-client.registerFunction('openwiki::http::refresh', async ({ path_params }) => {
+worker.registerFunction('openwiki::http::refresh', async ({ path_params }) => {
   const r = await refreshWiki(path_params?.id);
   return jsonResponse(200, r);
 }, HTTP_META('HTTP POST /openwiki/api/wikis/:id/refresh'));
 
 // SSE live progress: stream generation events over the HTTP response channel.
-client.registerFunction('openwiki::http::events', async (req) => {
+worker.registerFunction('openwiki::http::events', async (req) => {
   const wikiId = req?.path_params?.id;
   const w = req?.response;
   if (!w || !w.stream) return jsonResponse(200, { error: 'streaming unsupported' });
@@ -547,7 +555,7 @@ client.registerFunction('openwiki::http::events', async (req) => {
     if (off) off();
     try { w.close(); } catch { /* ignore */ }
   };
-  // The channel socket can close under us when the client navigates away. A
+  // The channel socket can close under us when the worker navigates away. A
   // write then emits an ASYNC 'error' event on the Writable — a try/catch around
   // write() cannot catch it, and unhandled it crashes the whole worker. Listen
   // for it, and never write once closed.
@@ -564,14 +572,14 @@ client.registerFunction('openwiki::http::events', async (req) => {
   return null;
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id/events (SSE live progress)'));
 
-client.registerFunction('openwiki::http::ask', async ({ path_params, body }) => {
+worker.registerFunction('openwiki::http::ask', async ({ path_params, body }) => {
   const p = parseBody(body);
   if (!p.q) return jsonResponse(400, { error: 'q required' });
-  return jsonResponse(200, await askWiki(client, { id: path_params?.id, q: p.q, mode: p.mode, file_answer: p.file_answer }));
+  return jsonResponse(200, await askWiki(worker, { id: path_params?.id, q: p.q, mode: p.mode, file_answer: p.file_answer }));
 }, HTTP_META('HTTP POST /openwiki/api/wikis/:id/ask'));
 
-client.registerFunction('openwiki::http::diagram', async ({ path_params, query_params }) => {
-  return jsonResponse(200, await makeDiagram(client, { id: path_params?.id, kind: query_params?.kind }));
+worker.registerFunction('openwiki::http::diagram', async ({ path_params, query_params }) => {
+  return jsonResponse(200, await makeDiagram(worker, { id: path_params?.id, kind: query_params?.kind }));
 }, HTTP_META('HTTP GET /openwiki/api/wikis/:id/diagram'));
 
 // ---------- HTTP triggers ----------
@@ -579,11 +587,12 @@ client.registerFunction('openwiki::http::diagram', async ({ path_params, query_p
 // double-slashes and 404s.
 
 function bind(function_id, api_path, http_method = 'GET') {
-  return client.registerTrigger({ type: 'http', function_id, config: { api_path, http_method } });
+  return worker.registerTrigger({ type: 'http', function_id, config: { api_path, http_method } });
 }
 bind('openwiki::http::ui', 'openwiki', 'GET');
 bind('openwiki::http::ui', 'openwiki/', 'GET');
 bind('openwiki::http::wikis-list', 'openwiki/api/wikis', 'GET');
+bind('openwiki::http::models', 'openwiki/api/models', 'GET');
 bind('openwiki::http::wikis-create', 'openwiki/api/wikis', 'POST');
 bind('openwiki::http::wiki-get', 'openwiki/api/wikis/:id', 'GET');
 bind('openwiki::http::wiki-status', 'openwiki/api/wikis/:id/status', 'GET');
@@ -597,7 +606,7 @@ bind('openwiki::http::diagram', 'openwiki/api/wikis/:id/diagram', 'GET');
 
 // ---------- Cron: nightly refresh scan ----------
 
-client.registerFunction('openwiki::cron::nightly', async () => {
+worker.registerFunction('openwiki::cron::nightly', async () => {
   const wikis = await store.listWikis();
   for (const w of wikis) {
     try { await refreshWiki(w.id); } catch (e) { console.error('[openwiki] cron refresh failed', w.id, e?.message); }
@@ -610,18 +619,18 @@ client.registerFunction('openwiki::cron::nightly', async () => {
 });
 
 try {
-  client.registerTrigger({ type: 'cron', function_id: 'openwiki::cron::nightly', config: { expression: '0 15 3 * * * *' } });
+  worker.registerTrigger({ type: 'cron', function_id: 'openwiki::cron::nightly', config: { expression: '0 15 3 * * * *' } });
 } catch (e) {
   console.warn('[openwiki] failed to bind cron', e?.message || e);
 }
 
 // Configuration: register the schema, load the stored value, and hot-reload on
 // change. Runs off the boot path so it never delays function registration.
-configuration.registerConfig(client)
-  .then(() => configuration.fetchConfig(client))
+configuration.registerConfig(worker)
+  .then(() => configuration.fetchConfig(worker))
   .then((c) => { cfg = c; })
   .catch((e) => console.warn('[openwiki] config register failed; using defaults', e?.message || e));
-configuration.bindConfigTrigger(client, async () => { cfg = await configuration.fetchConfig(client); });
+configuration.bindConfigTrigger(worker, async () => { cfg = await configuration.fetchConfig(worker); });
 
 // Reap generations orphaned by a restart. On a fresh boot nothing is in-flight,
 // so any wiki still flagged generating was interrupted mid-run. Clear the flag,
@@ -646,5 +655,5 @@ configuration.bindConfigTrigger(client, async () => { cfg = await configuration.
 
 console.log('[openwiki] worker ready — model default =', cfg.model, 'iii url =', III_URL);
 
-process.on('SIGTERM', async () => { try { await client.shutdown(); } catch {} process.exit(0); });
-process.on('SIGINT', async () => { try { await client.shutdown(); } catch {} process.exit(0); });
+process.on('SIGTERM', async () => { try { await worker.shutdown(); } catch {} process.exit(0); });
+process.on('SIGINT', async () => { try { await worker.shutdown(); } catch {} process.exit(0); });

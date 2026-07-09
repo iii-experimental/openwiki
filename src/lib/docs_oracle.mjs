@@ -32,9 +32,9 @@ export function candidateOrigins(repoUrl, readme) {
   return [...origins].slice(0, 4);
 }
 
-async function webFetch(client, url) {
+async function webFetch(worker, url) {
   try {
-    const res = await client.trigger({ function_id: 'web::fetch', payload: { url, format: 'markdown' }, timeoutMs: 30_000 });
+    const res = await worker.trigger({ function_id: 'web::fetch', payload: { url, format: 'markdown' }, timeoutMs: 30_000 });
     const status = res?.status ?? res?.status_code ?? 200;
     const body = res?.content ?? res?.body ?? res?.markdown ?? res?.text ?? '';
     if (status >= 400 || !body) return null;
@@ -42,11 +42,11 @@ async function webFetch(client, url) {
   } catch { return null; }
 }
 
-export async function fetchDocsIndex(client, { repoUrl, readme, repoDir }) {
+export async function fetchDocsIndex(worker, { repoUrl, readme, repoDir }) {
   // 1) llms.txt at README-referenced documentation origins.
   for (const origin of candidateOrigins(repoUrl, readme)) {
     for (const p of ['/llms.txt', '/llms-full.txt']) {
-      const txt = await webFetch(client, origin + p);
+      const txt = await webFetch(worker, origin + p);
       if (txt && /\]\(https?:/.test(txt)) {
         const parsed = parseLlmsTxt(txt);
         if (parsed.links.length >= 5) return { source: origin + p, linkCount: parsed.links.length, sections: parsed.sections };

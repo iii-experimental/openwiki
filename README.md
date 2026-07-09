@@ -51,10 +51,11 @@ openwiki degrades gracefully when a worker is absent:
 | neither | heuristic — built from file headers, always works |
 
 The provider credential lives in the `llm-router` / provider config, never in
-openwiki. The default model is `claude-sonnet-4-6`; override per call
-(`{"model":"..."}`) or with `OPENWIKI_MODEL`. openwiki resolves the model against
-`router::models::list` and prefers a structured-output-capable model for the
-harness path.
+openwiki. The default model is `claude-haiku-4-5-20251001`; the browser UI's
+generate form has a model picker populated from the router's live catalog
+(grouped by provider), or override per call (`{"model":"..."}`) or with
+`OPENWIKI_MODEL`. openwiki resolves the model against `router::models::list` and
+prefers a structured-output-capable model for the harness path.
 
 Git (clone / diff) runs through `shell` (jailed to `fs.host_roots`); if the shell
 worker is absent, openwiki falls back to a local `git` on PATH.
@@ -87,7 +88,7 @@ Without the shell worker, openwiki falls back to a local `git` on PATH.
 Environment:
 
 - `III_URL` engine WebSocket (default `ws://localhost:49134`).
-- `OPENWIKI_MODEL` default generation model (default `claude-sonnet-4-6`).
+- `OPENWIKI_MODEL` default generation model (default `claude-haiku-4-5-20251001`).
 - `OPENWIKI_DATA` wiki store directory (default `/tmp/openwiki-data`).
 - `OPENWIKI_MAX_PARALLEL` concurrent page writers (default `3`).
 
@@ -137,6 +138,7 @@ still produces a browsable wiki.
 - `openwiki::generate { repo_url, model? }` start a wiki build; returns `{ wiki_id, status }`.
 - `openwiki::status { id }` generation progress.
 - `openwiki::wikis` list generated wikis.
+- `openwiki::models` models available via llm-router (for the UI's picker) plus the configured default.
 - `openwiki::wiki { id }` wiki metadata.
 - `openwiki::pages { id }` page index.
 - `openwiki::page { id, slug }` a page's markdown and metadata.
@@ -192,9 +194,13 @@ commit, diagrams render inline in the page, generation progress streams live
 
 ## Configuration
 
-- Model: pass `model` to `openwiki::generate`, or set `OPENWIKI_MODEL`. Any model
-  the router knows works, for example `xai/...` or `codex/...`.
-- Credential: lives in the `llm-router` config, not in this worker.
+- Model: pick one in the browser UI's generate form (populated from the router's
+  live catalog, grouped by provider), pass `model` to `openwiki::generate`, or set
+  `OPENWIKI_MODEL`. Any model the router advertises works. Default
+  `claude-haiku-4-5-20251001`.
+- Providers / credentials: live in the `llm-router` config, never in this worker.
+  Add a provider (anthropic, openai, xai, codex, ...) through the console's harness
+  onboarding; openwiki's picker then shows its models automatically.
 
 ## Notes for authors
 
