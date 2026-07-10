@@ -39,6 +39,12 @@ fallback. Persistence is iii-state (engine builtin). The engine serves the UI +
 JSON API over its built-in `http` triggers; the nightly refresh uses `iii-cron`
 (pulled in with `harness`).
 
+Install `iii` engine before anything else:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+```
+
 ### Workers
 
 One command installs everything openwiki composes:
