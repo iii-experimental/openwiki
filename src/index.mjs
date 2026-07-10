@@ -277,6 +277,7 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     await setStatus(wikiId, { phase: 'error', progress: 0, error: String(e?.message || e), updated_at: now() });
   } finally {
     inflight.delete(wikiId);
+    pagesWritten.delete(wikiId);
   }
 }
 
