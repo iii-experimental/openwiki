@@ -1,8 +1,11 @@
 # openwiki
 
 <p align="center">
-  <img src="assets/openwiki-light.png" alt="OpenWiki browser UI, light theme" width="49%">
-  <img src="assets/openwiki-dark.png" alt="OpenWiki browser UI, dark theme" width="49%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/openwiki-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/openwiki-light.png">
+    <img alt="OpenWiki browser UI" src="assets/openwiki-light.png" width="100%">
+  </picture>
 </p>
 
 An iii worker that builds and maintains a source-grounded, interlinked markdown
