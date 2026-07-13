@@ -38,13 +38,19 @@ stored in iii-state; a browser UI and JSON API are served under `/openwiki`.
 - `openwiki::page { id, slug }` — a page's markdown and metadata.
 - `openwiki::search { id, q }` — keyword search over a wiki.
 - `openwiki::refresh { id }` — git-pull and regenerate changed pages.
+- `openwiki::set-schedule { id, schedule }` — set a wiki's auto-refresh cadence
+  (`off` | `3h` | `6h` | `12h` | `daily` | `weekly` | a cron string).
+- `openwiki::delete { id }` — delete a wiki and all its pages.
 
 The same operations are exposed over HTTP under `/openwiki/api/*`, and
 `/openwiki` serves the browser UI.
 
 ## Reactive triggers
 
-- `openwiki::cron::nightly` runs daily and refreshes every wiki from its
-  repository's latest commits.
-- `openwiki::on-config-change` reloads the default model and page-writer
-  concurrency when the `openwiki` configuration entry changes.
+- Each wiki with an auto-refresh cadence gets its own `cron` trigger; when one
+  fires, `openwiki::cron::refresh-due` runs an incremental refresh of every wiki
+  whose interval has elapsed. Set the cadence per wiki (`openwiki::set-schedule`
+  or the UI control); the config worker's `refresh_default` is the default for new
+  wikis. Nothing is scheduled by default (`off`).
+- `openwiki::on-config-change` reloads the default model, page-writer concurrency,
+  and default refresh cadence when the `openwiki` configuration entry changes.

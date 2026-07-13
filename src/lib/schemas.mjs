@@ -218,6 +218,14 @@ export const WRITE_PAGE_RES = {
   type: 'object', additionalProperties: false, required: ['slug', 'ok'],
   properties: { slug: STRING, ok: { type: 'boolean' } },
 };
+export const SET_SCHEDULE_REQ = {
+  type: 'object', additionalProperties: false, required: ['id', 'schedule'],
+  properties: { id: STRING, schedule: STRING },
+};
+export const SET_SCHEDULE_RES = {
+  type: 'object', additionalProperties: false, required: ['id', 'schedule', 'ok'],
+  properties: { id: STRING, schedule: STRING, ok: { type: 'boolean' } },
+};
 export const PAGE_RES = {
   type: 'object',
   additionalProperties: false,
