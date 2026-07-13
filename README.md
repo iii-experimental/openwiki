@@ -36,8 +36,8 @@ builds a serviceable page from file headers with no model at all.
 
 Git runs through `shell` (`shell::exec`) when present, otherwise a local `git`
 fallback. Persistence is iii-state (engine builtin). The engine serves the UI +
-JSON API over its built-in `http` triggers; the nightly refresh uses `iii-cron`
-(pulled in with `harness`).
+JSON API over its built-in `http` triggers; each wiki's scheduled refresh runs on
+its own `iii-cron` trigger (pulled in with `harness`).
 
 Install `iii` engine before anything else:
 
@@ -161,6 +161,7 @@ still produces a browsable wiki.
 - `openwiki::page { id, slug }` a page's markdown and metadata.
 - `openwiki::search { id, q }` keyword search over a wiki.
 - `openwiki::refresh { id }` pull and regenerate only the pages whose source changed (incremental).
+- `openwiki::set-schedule { id, schedule }` set a wiki's auto-refresh cadence (`off` | `3h` | `6h` | `12h` | `daily` | `weekly` | a cron string); also `PUT /openwiki/api/wikis/:id/schedule` and the per-wiki control in the UI.
 - `openwiki::lint { id }` validate every page citation against the clone; flag thin pages.
 - `openwiki::delete { id }` delete a wiki and all its pages (also available as `DELETE /openwiki/api/wikis/:id`, and as the per-wiki remove control in the UI).
 
@@ -218,7 +219,22 @@ never enumerate page bodies.
 3. Map changed paths to affected pages through the file→page index; regenerate
    only those pages.
 4. Gate on a content hash so an identical result does not churn the wiki, so no
-   empty updates on a nightly cron.
+   empty updates on a scheduled refresh.
+
+## Auto-refresh schedule
+
+Each wiki carries its own refresh cadence, set from the UI (the per-wiki
+auto-refresh control) or with `openwiki::set-schedule { id, schedule }` /
+`PUT /openwiki/api/wikis/:id/schedule`. Options: `off` (default), `3h`, `6h`,
+`12h`, `daily`, `weekly`, or a raw cron string. Nothing is hardcoded: the global
+default for a new wiki is the config worker's `refresh_default`, and every wiki
+overrides it.
+
+Setting a cadence registers a per-wiki `cron` trigger. When any fires,
+`openwiki::cron::refresh-due` runs an incremental `openwiki::refresh` on each wiki
+whose interval has elapsed (a content-hash gate keeps an unchanged repo from
+churning). Triggers are torn down when a wiki is deleted and re-armed from the
+stored schedules on restart.
 
 ## Configuration
 
@@ -229,6 +245,9 @@ never enumerate page bodies.
 - Providers / credentials: live in the `llm-router` config, never in this worker.
   Add a provider (anthropic, openai, xai, codex, ...) through the console's harness
   onboarding; openwiki's picker then shows its models automatically.
+- `refresh_default`: the auto-refresh cadence new wikis start with (`off` by
+  default; each wiki overrides it in the UI). Editable in the console like the
+  other openwiki config, or seed it with `OPENWIKI_REFRESH_DEFAULT`.
 
 ## Notes for authors
 

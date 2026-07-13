@@ -264,7 +264,13 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     }
 
     const content_hash = await store.computeContentHash(wikiId);
-    await store.saveWiki(wikiId, { id: wikiId, repo_url: repoUrl, repo_name: name, ref: ref || '', commit, created_at: started, updated_at: now(), page_count: pages.length, category_count: categories.length, categories, navigation, summary, model, steer: steer || undefined, generating: false, content_hash });
+    // Preserve the auto-refresh cadence across a (re)generation (this saveWiki
+    // rebuilds meta from scratch), defaulting a brand-new wiki to the config
+    // default. Then (re)register its cron trigger.
+    const prior = await store.getWiki(wikiId);
+    const refresh_schedule = (prior && prior.refresh_schedule) || cfg.refresh_default || 'off';
+    await store.saveWiki(wikiId, { id: wikiId, repo_url: repoUrl, repo_name: name, ref: ref || '', commit, created_at: started, updated_at: now(), page_count: pages.length, category_count: categories.length, categories, navigation, summary, model, steer: steer || undefined, generating: false, content_hash, refresh_schedule, last_refresh_at: (prior && prior.last_refresh_at) || undefined });
+    applyWikiSchedule(wikiId, refresh_schedule);
     await setStatus(wikiId, { phase: 'ready', progress: 1, message: 'Wiki ready', updated_at: now() });
     await store.appendLog(wikiId, 'Wiki ready.');
     try {
@@ -289,6 +295,7 @@ async function startWiki(repoUrl, model, ref, steer) {
     id: wikiId, repo_url: repoUrl, repo_name: inferRepoName(repoUrl), ref: ref || '', commit: '',
     created_at: now(), updated_at: now(), page_count: 0, category_count: 0,
     categories: [], summary: '', model: chosen, steer: steer || undefined, generating: true,
+    refresh_schedule: cfg.refresh_default || 'off',
   });
   await setStatus(wikiId, { phase: 'queued', progress: 0, message: 'Queued', updated_at: now() });
   setImmediate(() => { runGeneration(wikiId, { repoUrl, model: chosen, ref, steer }).catch((e) => console.error(e)); });
@@ -325,6 +332,11 @@ async function runRefresh(wikiId, { dir, itemsToWrite, outline, meta, newCommit,
 async function refreshWiki(wikiId) {
   const meta = await store.getWiki(wikiId);
   if (!meta) throw err('openwiki/wiki_not_found', 'wiki not found');
+
+  // Stamp the refresh clock up front so the scheduled due-check advances even
+  // when this run finds nothing to do or kicks off an async rebuild.
+  meta.last_refresh_at = now();
+  await store.saveWiki(wikiId, meta);
 
   const dir = store.repoDir(wikiId);
   const prevCommit = meta.commit || '';
@@ -456,6 +468,7 @@ worker.registerFunction(
   async (a) => {
     const id = needId(a, 'openwiki::delete');
     if (inflight.has(id)) throw err('openwiki/generating', 'wiki is generating; stop it before deleting');
+    applyWikiSchedule(id, 'off'); // tear down any auto-refresh trigger for this wiki
     await store.deleteWiki(id);
     return { id, deleted: true };
   },
@@ -711,6 +724,17 @@ worker.registerFunction('openwiki::http::refresh', async ({ path_params }) => {
   return jsonResponse(200, r);
 }, HTTP_META('HTTP POST /openwiki/api/wikis/:id/refresh'));
 
+worker.registerFunction('openwiki::http::schedule-set', async ({ path_params, body }) => {
+  const id = path_params?.id;
+  const schedule = String(parseBody(body).schedule || 'off');
+  if (!SCHEDULE_PRESETS.includes(schedule) && !isRawCron(schedule)) return jsonResponse(400, { error: 'invalid schedule' });
+  const meta = await store.getWiki(id);
+  if (!meta) return jsonResponse(404, { error: 'not found' });
+  await store.saveWiki(id, { ...meta, refresh_schedule: schedule, updated_at: now() });
+  applyWikiSchedule(id, schedule);
+  return jsonResponse(200, { id, schedule, ok: true });
+}, HTTP_META('HTTP PUT /openwiki/api/wikis/:id/schedule'));
+
 // SSE live progress: stream generation events over the HTTP response channel.
 worker.registerFunction('openwiki::http::events', async (req) => {
   const wikiId = req?.path_params?.id;
@@ -776,29 +800,80 @@ bind('openwiki::http::pages-list', 'openwiki/api/wikis/:id/pages', 'GET');
 bind('openwiki::http::page-get', 'openwiki/api/wikis/:id/pages/:slug', 'GET');
 bind('openwiki::http::search', 'openwiki/api/wikis/:id/search', 'GET');
 bind('openwiki::http::refresh', 'openwiki/api/wikis/:id/refresh', 'POST');
+bind('openwiki::http::schedule-set', 'openwiki/api/wikis/:id/schedule', 'PUT');
 bind('openwiki::http::events', 'openwiki/api/wikis/:id/events', 'GET');
 bind('openwiki::http::ask', 'openwiki/api/wikis/:id/ask', 'POST');
 bind('openwiki::http::diagram', 'openwiki/api/wikis/:id/diagram', 'GET');
 
-// ---------- Cron: nightly refresh scan ----------
+// ---------- Scheduled refresh (per-wiki cron triggers) ----------
+// Each wiki carries its own auto-refresh cadence, set from the UI, never
+// hardcoded. openwiki::set-schedule registers a per-wiki cron trigger; every
+// such trigger fires openwiki::cron::refresh-due, which refreshes the wikis whose
+// interval has elapsed. Trigger handles live in wikiTriggers so a schedule change
+// or delete can unregister the old one; on boot they are re-registered from the
+// stored schedules.
+const wikiTriggers = new Map(); // wikiId -> unregister fn
 
-worker.registerFunction('openwiki::cron::nightly', async () => {
+const REFRESH_INTERVALS = {
+  '3h': { cron: '0 0 */3 * * *', ms: 3 * 3600e3 },
+  '6h': { cron: '0 0 */6 * * *', ms: 6 * 3600e3 },
+  '12h': { cron: '0 0 */12 * * *', ms: 12 * 3600e3 },
+  daily: { cron: '0 0 3 * * *', ms: 24 * 3600e3 },
+  weekly: { cron: '0 0 3 * * 1', ms: 7 * 24 * 3600e3 },
+};
+const SCHEDULE_PRESETS = ['off', ...Object.keys(REFRESH_INTERVALS)];
+const isRawCron = (s) => /^(\S+\s+){4,5}\S+$/.test(String(s || ''));
+
+// Register (or replace) one wiki's cron trigger. 'off' just unregisters. A raw
+// 5-6 field cron is accepted for power users; its due window is the trigger
+// cadence itself (refresh whenever it fires).
+function applyWikiSchedule(wikiId, schedule) {
+  const prev = wikiTriggers.get(wikiId);
+  if (prev) { try { prev(); } catch { /* already gone */ } wikiTriggers.delete(wikiId); }
+  if (!schedule || schedule === 'off') return;
+  const cron = REFRESH_INTERVALS[schedule] ? REFRESH_INTERVALS[schedule].cron : schedule;
+  try {
+    const { unregister } = worker.registerTrigger({
+      type: 'cron', function_id: 'openwiki::cron::refresh-due', config: { schedule: cron }, metadata: { wiki_id: wikiId },
+    });
+    wikiTriggers.set(wikiId, unregister);
+  } catch (e) { console.warn('[openwiki] failed to schedule', wikiId, e?.message || e); }
+}
+
+// A scheduled cron fired: refresh every wiki whose interval has elapsed. All the
+// per-wiki triggers point here; the due check keeps it correct regardless of
+// which one fired, and idempotent (content-hash gate + inflight guard).
+worker.registerFunction('openwiki::cron::refresh-due', async () => {
   const wikis = await store.listWikis();
+  let refreshed = 0;
   for (const w of wikis) {
-    try { await refreshWiki(w.id); } catch (e) { console.error('[openwiki] cron refresh failed', w.id, e?.message); }
+    const sched = w.refresh_schedule;
+    if (!sched || sched === 'off' || inflight.has(w.id)) continue;
+    const dueMs = (REFRESH_INTERVALS[sched] && REFRESH_INTERVALS[sched].ms) || 0; // raw cron: due whenever it fires
+    const last = w.last_refresh_at ? Date.parse(w.last_refresh_at) : 0;
+    if (Date.now() - last < dueMs - 60_000) continue; // 1-minute slack against cron drift
+    try { await refreshWiki(w.id); refreshed += 1; } catch (e) { console.error('[openwiki] scheduled refresh failed', w.id, e?.message); }
   }
-  return { scanned: wikis.length };
+  return { refreshed };
 }, {
-  description: 'Cron: check every wiki for source changes and refresh impacted pages.',
-  request_format: { type: 'object', additionalProperties: false, properties: {} },
-  response_format: { type: 'object', additionalProperties: false, required: ['scanned'], properties: { scanned: { type: 'integer' } } },
+  description: 'Cron: refresh every wiki whose auto-refresh interval has elapsed.',
+  request_format: { type: 'object', additionalProperties: true, properties: {} },
+  response_format: { type: 'object', additionalProperties: false, required: ['refreshed'], properties: { refreshed: { type: 'integer' } } },
 });
 
-try {
-  worker.registerTrigger({ type: 'cron', function_id: 'openwiki::cron::nightly', config: { expression: '0 15 3 * * * *' } });
-} catch (e) {
-  console.warn('[openwiki] failed to bind cron', e?.message || e);
-}
+// Set (or clear) a wiki's auto-refresh cadence and (re)register its cron trigger.
+worker.registerFunction('openwiki::set-schedule', async (a) => {
+  const id = needId(a, 'openwiki::set-schedule');
+  const schedule = String(a.schedule || 'off');
+  if (!SCHEDULE_PRESETS.includes(schedule) && !isRawCron(schedule)) {
+    throw err('openwiki/bad_request', `schedule must be one of ${SCHEDULE_PRESETS.join(', ')} or a 5-6 field cron string`);
+  }
+  const meta = await store.getWiki(id);
+  if (!meta) throw err('openwiki/wiki_not_found', 'wiki not found');
+  await store.saveWiki(id, { ...meta, refresh_schedule: schedule, updated_at: now() });
+  applyWikiSchedule(id, schedule);
+  return { id, schedule, ok: true };
+}, { description: 'Set a wiki auto-refresh cadence: off | 3h | 6h | 12h | daily | weekly | a cron string. Params: { id, schedule }.', request_format: S.SET_SCHEDULE_REQ, response_format: S.SET_SCHEDULE_RES });
 
 // Real-time page collection: subscribe to the harness's emitted turn-completed
 // events and route each to the active generation (turnbus). One broad binding
@@ -846,6 +921,11 @@ configuration.bindConfigTrigger(worker, async () => { cfg = await configuration.
         message: `Interrupted by a restart with ${pages.length} page(s). Refresh to complete.`, updated_at: now(),
       });
       await store.appendLog(w.id, `Reaped orphaned generation (${pages.length} pages on disk).`);
+    }
+    // Cron triggers are in-memory registrations, so re-arm each wiki's stored
+    // auto-refresh cadence after a restart.
+    for (const w of wikis) {
+      if (w.refresh_schedule && w.refresh_schedule !== 'off') applyWikiSchedule(w.id, w.refresh_schedule);
     }
   } catch (e) { console.warn('[openwiki] reaper failed', e?.message || e); }
 })();

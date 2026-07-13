@@ -141,6 +141,11 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .wiki-item:hover .wiki-del{opacity:.55}
   .wiki-del:hover,.wiki-del:focus,.wiki-del:focus-visible{opacity:1;color:var(--danger)}
   @media (hover:none){.wiki-del{opacity:.55}}
+  .wiki-sched{margin-top:4px;width:100%;font-size:10.5px;color:var(--text-dim);background:var(--panel);
+    border:1px solid var(--border);border-radius:0;padding:2px 4px;font-family:inherit;cursor:pointer;
+    text-transform:lowercase;letter-spacing:.03em;opacity:0;transition:opacity .12s}
+  .wiki-item:hover .wiki-sched,.wiki-sched:focus{opacity:.9}
+  @media (hover:none){.wiki-sched{opacity:.9}}
   .wiki-item .meta{font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums}
   .wiki-item .genrow{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--accent);
     text-transform:lowercase;letter-spacing:.04em;font-variant-numeric:tabular-nums}
@@ -745,6 +750,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     } else {
       node.appendChild(el('div', { class:'meta',
         text: (w.page_count || 0) + ' pages' + (w.category_count ? ' \u00b7 ' + w.category_count + ' categories' : '') }));
+      node.appendChild(scheduleControl(w));
     }
     if (generating) {
       const pct = Math.round((gen.progress || 0) * 100);
@@ -755,6 +761,31 @@ export const INDEX_HTML = String.raw`<!doctype html>
       if (!err) node.appendChild(el('div', { class:'progressbar' }, el('div', { style: 'width:' + pct + '%' })));
     }
     return node;
+  }
+
+  // Per-wiki auto-refresh cadence. A small select, so the schedule is set from
+  // the UI (never hardcoded). Clicks/changes stopPropagation so touching it does
+  // not select the wiki.
+  function scheduleControl(w) {
+    const cur = w.refresh_schedule || 'off';
+    const opts = [['off', 'off'], ['3h', 'every 3h'], ['6h', 'every 6h'], ['12h', 'every 12h'], ['daily', 'daily'], ['weekly', 'weekly']];
+    const sel = el('select', {
+      class: 'wiki-sched', title: 'Auto-refresh cadence', 'aria-label': 'Auto-refresh cadence',
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => { e.stopPropagation(); setSchedule(w.id, e.target.value); },
+    });
+    for (const [val, label] of opts) {
+      sel.appendChild(el('option', { value: val, text: 'auto-refresh: ' + label, ...(cur === val ? { selected: true } : {}) }));
+    }
+    return sel;
+  }
+
+  async function setSchedule(id, schedule) {
+    try {
+      await api('/wikis/' + id + '/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schedule }) });
+    } catch (e) { flashError('Could not set auto-refresh: ' + (e.message || e)); return; }
+    const w = state.wikis.find((x) => x.id === id);
+    if (w) w.refresh_schedule = schedule;
   }
 
   async function deleteWiki(id) {

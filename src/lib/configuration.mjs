@@ -7,6 +7,7 @@ const CONFIG_FN_ID = 'openwiki::on-config-change';
 const DEFAULTS = {
   model: process.env.OPENWIKI_MODEL || 'claude-haiku-4-5-20251001',
   max_parallel: Math.max(1, parseInt(process.env.OPENWIKI_MAX_PARALLEL || '3', 10)),
+  refresh_default: process.env.OPENWIKI_REFRESH_DEFAULT || 'off',
 };
 
 function schema() {
@@ -26,6 +27,12 @@ function schema() {
         description: 'Concurrent page writers per generation.',
         default: DEFAULTS.max_parallel,
       },
+      refresh_default: {
+        type: 'string',
+        enum: ['off', '3h', '6h', '12h', 'daily', 'weekly'],
+        description: 'Default auto-refresh cadence for new wikis. Each wiki can override it in the UI. "off" means no scheduled refresh.',
+        default: DEFAULTS.refresh_default,
+      },
     },
   };
 }
@@ -38,7 +45,7 @@ export async function registerConfig(iii) {
     payload: {
       id: CONFIG_ID,
       name: 'OpenWiki',
-      description: 'OpenWiki worker: default model and page-writer concurrency.',
+      description: 'OpenWiki worker: default model, page-writer concurrency, and auto-refresh cadence.',
       schema: schema(),
       initial_value: DEFAULTS,
     },
